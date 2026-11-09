@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -28,15 +30,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.soundify.app.BuildConfig
+import com.soundify.app.cleanvideo.StorageUsage
 import com.soundify.app.data.ThemePreferences
 import com.soundify.app.ui.theme.ThemeAccent
 import com.soundify.app.ui.theme.ThemeMode
@@ -44,12 +52,15 @@ import com.soundify.app.ui.theme.ThemeMode
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
-    storageUsed: Long,
+    storage: StorageUsage?,
+    storageMessage: String?,
     theme: ThemePreferences,
     onBack: () -> Unit,
+    onFreeUpSpace: () -> Unit,
 ) {
     val mode by theme.mode.collectAsStateWithLifecycle()
     val accent by theme.accent.collectAsStateWithLifecycle()
+    var confirmFree by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -128,6 +139,48 @@ fun SettingsScreen(
             Spacer(Modifier.height(20.dp))
 
             Text(
+                text = "Storage",
+                style = MaterialTheme.typography.titleLarge
+            )
+            Spacer(Modifier.height(8.dp))
+            if (storage == null) {
+                Text("Measuring…", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                StorageRow("Projects", storage.projectsBytes)
+                StorageRow("Clean Video results", storage.cleanVideoBytes)
+                StorageRow("Temporary files", storage.cacheBytes)
+                StorageRow("App and model", storage.modelBytes)
+                Spacer(Modifier.height(4.dp))
+                StorageRow("Used by Soundify", storage.totalBytes, bold = true)
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { confirmFree = true },
+                enabled = storage != null && storage.userDataBytes > 0,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Free up space")
+            }
+            Text(
+                text = "Removes temporary files and Clean Video results. " +
+                    "Projects and files you saved are kept.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            storageMessage?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(20.dp))
+
+            Text(
                 text = "About Soundify",
                 style = MaterialTheme.typography.titleLarge
             )
@@ -142,11 +195,6 @@ fun SettingsScreen(
             Spacer(Modifier.height(20.dp))
             Text(
                 text = "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Storage used: ${formatBytes(storageUsed)}",
                 style = MaterialTheme.typography.bodyMedium
             )
 
@@ -174,5 +222,50 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+
+    if (confirmFree) {
+        AlertDialog(
+            onDismissRequest = { confirmFree = false },
+            title = { Text("Free up space?") },
+            text = {
+                Text(
+                    "Removes temporary files and every Clean Video result. " +
+                        "Projects and files you saved stay on the device."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmFree = false
+                        onFreeUpSpace()
+                    }
+                ) { Text("Free up space") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmFree = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun StorageRow(label: String, bytes: Long, bold: Boolean = false) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (bold) FontWeight.SemiBold else null,
+        )
+        Text(
+            formatBytes(bytes),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (bold) FontWeight.SemiBold else null,
+        )
     }
 }

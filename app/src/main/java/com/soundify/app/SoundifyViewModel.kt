@@ -10,6 +10,8 @@ import com.soundify.app.audio.AudioInfo
 import com.soundify.app.audio.AudioMetadata
 import com.soundify.app.audio.StemMixer
 import com.soundify.app.audio.WavExporter
+import com.soundify.app.cleanvideo.StorageManager
+import com.soundify.app.cleanvideo.StorageUsage
 import com.soundify.app.data.Project
 import com.soundify.app.data.ProjectStore
 import com.soundify.app.data.RoleMapper
@@ -47,6 +49,8 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
     val exportedFile = MutableStateFlow<File?>(null)
     val message = MutableStateFlow<String?>(null)
     val storageUsed = MutableStateFlow(0L)
+    val storage = MutableStateFlow<StorageUsage?>(null)
+    val storageMessage = MutableStateFlow<String?>(null)
 
     private var mixer: StemMixer? = null
     private var exportJob: Job? = null
@@ -65,7 +69,28 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
     fun refreshStorage() {
         viewModelScope.launch(Dispatchers.IO) {
             storageUsed.value = store.storageUsedBytes()
+            storage.value = StorageManager(context).usage()
         }
+    }
+
+    fun freeUpSpace() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val manager = StorageManager(context)
+            val temporary = manager.cleanTemporary()
+            val results = manager.deleteAllCleanVideo()
+            storageUsed.value = store.storageUsedBytes()
+            storage.value = manager.usage()
+            val freed = temporary + results
+            storageMessage.value = if (freed > 0) {
+                "Freed ${com.soundify.app.ui.formatBytes(freed)}"
+            } else {
+                "Nothing to remove"
+            }
+        }
+    }
+
+    fun clearStorageMessage() {
+        storageMessage.value = null
     }
 
     fun openImport() {
@@ -73,6 +98,7 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun openSettings() {
+        storageMessage.value = null
         refreshStorage()
         screen.value = Screen.Settings
     }

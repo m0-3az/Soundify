@@ -34,6 +34,8 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
     val exported by viewModel.exportedFile.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val storage by viewModel.storageUsed.collectAsStateWithLifecycle()
+    val storageUsage by viewModel.storage.collectAsStateWithLifecycle()
+    val storageMessage by viewModel.storageMessage.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -110,9 +112,11 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
             }
 
             is Screen.Settings -> SettingsScreen(
-                storageUsed = storage,
+                storage = storageUsage,
+                storageMessage = storageMessage,
                 theme = themePreferences,
-                onBack = viewModel::back
+                onBack = viewModel::back,
+                onFreeUpSpace = viewModel::freeUpSpace,
             )
 
             is Screen.CleanVideo -> CleanVideoScreen(

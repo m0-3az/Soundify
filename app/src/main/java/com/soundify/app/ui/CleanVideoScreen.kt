@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -109,6 +110,31 @@ fun CleanVideoScreen(onBack: () -> Unit) {
     val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
     val saveMessage by viewModel.saveMessage.collectAsStateWithLifecycle()
     val cleanState by viewModel.cleanState.collectAsStateWithLifecycle()
+    val historyEntries by viewModel.history.collectAsStateWithLifecycle()
+    val duplicate by viewModel.duplicate.collectAsStateWithLifecycle()
+    val storage by viewModel.storage.collectAsStateWithLifecycle()
+    val storageMessage by viewModel.storageMessage.collectAsStateWithLifecycle()
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+
+    if (showHistory) {
+        CleanVideoHistoryScreen(
+            entries = historyEntries,
+            storage = storage,
+            storageMessage = storageMessage,
+            onOpen = { entry ->
+                viewModel.openHistoryEntry(entry)
+                showHistory = false
+            },
+            onDelete = viewModel::deleteHistoryEntry,
+            onClearAll = viewModel::clearHistory,
+            onFreeUpSpace = viewModel::freeUpSpace,
+            onBack = {
+                showHistory = false
+                viewModel.clearStorageMessage()
+            },
+        )
+        return
+    }
 
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -167,6 +193,11 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showHistory = true }) {
+                        Icon(Icons.Default.History, contentDescription = "Clean Video history")
                     }
                 },
             )
@@ -280,6 +311,29 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                     format.mime,
                     "${base}_$slug.${format.extension}",
                 )
+            },
+        )
+    }
+
+    duplicate?.let { entry ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissDuplicate,
+            title = { Text("Already cleaned") },
+            text = {
+                Text(
+                    "You already cleaned ${entry.displayName}. Open that result instead " +
+                        "of processing the video again?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.openHistoryEntry(entry) }) {
+                    Text("Open result")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::cleanAgain) {
+                    Text("Clean again")
+                }
             },
         )
     }

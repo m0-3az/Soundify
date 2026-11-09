@@ -33,7 +33,7 @@ object CleanVideoController {
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
-    fun start(context: Context, uri: Uri, name: String?) {
+    fun start(context: Context, uri: Uri, name: String?, fingerprint: String? = null) {
         if (_state.value.isProcessing) return
         _state.value = State(
             isProcessing = true,
@@ -45,6 +45,7 @@ object CleanVideoController {
             action = CleanVideoService.ACTION_START
             putExtra(CleanVideoService.EXTRA_URI, uri)
             putExtra(CleanVideoService.EXTRA_NAME, name)
+            putExtra(CleanVideoService.EXTRA_FINGERPRINT, fingerprint)
         }
         try {
             ContextCompat.startForegroundService(context, intent)
@@ -146,6 +147,40 @@ object CleanVideoController {
         if (_state.value.isProcessing) return
         CleanVideoStorage.deleteResult(context, _state.value.result)
         _state.value = State()
+    }
+
+    /**
+     * Clear the screen for a new selection without deleting the finished stems.
+     * Finished runs are owned by history and are removed from there instead.
+     */
+    fun clearForNewSelection() {
+        if (_state.value.isProcessing) return
+        _state.value = State()
+    }
+
+    /** Show a persisted history result without starting a new separation. */
+    fun open(result: CleanVideoResult) {
+        if (_state.value.isProcessing) return
+        _state.value = State(
+            isProcessing = false,
+            progress = 1f,
+            stage = CleanStage.DONE,
+            detail = "Done",
+            result = result,
+        )
+    }
+
+    /** Drop the in-memory result after its stems were deleted elsewhere. */
+    fun clearResult() {
+        _state.update {
+            it.copy(
+                result = null,
+                progress = 0f,
+                stage = null,
+                detail = null,
+                etaSeconds = null,
+            )
+        }
     }
 
     /** Delete the current stems but keep the selected source video and saved files. */

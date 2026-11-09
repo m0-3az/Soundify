@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import com.soundify.app.BuildConfig
 import com.soundify.app.MainActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +47,7 @@ class CleanVideoService : Service() {
                 @Suppress("DEPRECATION")
                 val uri = intent.getParcelableExtra(EXTRA_URI) as? Uri
                 val name = intent.getStringExtra(EXTRA_NAME)
+                val fingerprint = intent.getStringExtra(EXTRA_FINGERPRINT)
                 if (uri == null) {
                     // A startForegroundService() call must reach startForeground()
                     // before stopSelf(), even when the intent is malformed.
@@ -59,7 +61,7 @@ class CleanVideoService : Service() {
                 }
                 val state = CleanVideoController.state.value
                 startForeground(NOTIFICATION_ID, buildNotification(state, "Preparing…"))
-                startJob(uri, name)
+                startJob(uri, name, fingerprint)
             }
 
             ACTION_CANCEL -> {
@@ -76,7 +78,7 @@ class CleanVideoService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startJob(uri: Uri, name: String?) {
+    private fun startJob(uri: Uri, name: String?, fingerprint: String?) {
         if (job?.isActive == true) return
         job = scope.launch {
             var lastNotification = 0L
@@ -94,6 +96,18 @@ class CleanVideoService : Service() {
                             ),
                         )
                     }
+                }
+                runCatching {
+                    val store = CleanVideoHistoryStore(
+                        CleanVideoStorage.exportRoot(applicationContext),
+                    )
+                    store.save(
+                        CleanVideoHistoryStore.entryFor(
+                            result = result,
+                            fingerprint = fingerprint.orEmpty(),
+                            appVersion = BuildConfig.VERSION_NAME,
+                        ),
+                    )
                 }
                 CleanVideoController.finish(result)
                 notifyFinished("Clean video is ready", "Open Soundify to review the four stems.")
@@ -205,6 +219,7 @@ class CleanVideoService : Service() {
         const val ACTION_CANCEL = "com.soundify.app.cleanvideo.CANCEL"
         const val EXTRA_URI = "uri"
         const val EXTRA_NAME = "name"
+        const val EXTRA_FINGERPRINT = "fingerprint"
 
         private const val CHANNEL_ID = "clean_video"
         private const val NOTIFICATION_ID = 41
