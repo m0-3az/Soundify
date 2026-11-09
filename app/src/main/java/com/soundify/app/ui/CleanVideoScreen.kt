@@ -229,6 +229,12 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                 Text(it, style = MaterialTheme.typography.titleMedium)
             }
 
+            if (historyEntries.isNotEmpty()) {
+                TextButton(onClick = { showHistory = true }) {
+                    Text("History (${historyEntries.size})")
+                }
+            }
+
             if (uri != null && !processing && result == null) {
                 Button(
                     onClick = viewModel::clean,

@@ -83,6 +83,8 @@ class CleanVideoService : Service() {
         job = scope.launch {
             var lastNotification = 0L
             try {
+                val resolvedFingerprint = fingerprint
+                    ?: VideoFingerprint.read(applicationContext, uri)
                 val result = StreamingCleaner(applicationContext).clean(uri, name) { progress ->
                     CleanVideoController.update(progress)
                     val now = SystemClock.elapsedRealtime()
@@ -104,7 +106,7 @@ class CleanVideoService : Service() {
                     store.save(
                         CleanVideoHistoryStore.entryFor(
                             result = result,
-                            fingerprint = fingerprint.orEmpty(),
+                            fingerprint = resolvedFingerprint.orEmpty(),
                             appVersion = BuildConfig.VERSION_NAME,
                         ),
                     )

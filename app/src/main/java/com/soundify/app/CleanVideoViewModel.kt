@@ -155,6 +155,7 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun clearHistory() {
+        if (CleanVideoController.state.value.isProcessing) return
         historyStore.deleteAllRuns()
         CleanVideoController.clearResult()
         message.value = "Clean Video history cleared"
@@ -163,6 +164,7 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun cleanTemporaryFiles() {
+        if (CleanVideoController.state.value.isProcessing) return
         viewModelScope.launch(Dispatchers.IO) {
             val freed = storageManager.cleanTemporary()
             refreshStorage()
@@ -175,6 +177,7 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun deleteAllCleanVideoResults() {
+        if (CleanVideoController.state.value.isProcessing) return
         viewModelScope.launch(Dispatchers.IO) {
             val freed = storageManager.deleteAllCleanVideo()
             CleanVideoController.clearResult()
@@ -194,6 +197,7 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
 
     /** One-tap cleanup: temporary files plus every Clean Video result, projects kept. */
     fun freeUpSpace() {
+        if (CleanVideoController.state.value.isProcessing) return
         viewModelScope.launch(Dispatchers.IO) {
             val temporary = storageManager.cleanTemporary()
             val results = storageManager.deleteAllCleanVideo()

@@ -10,6 +10,7 @@ import com.soundify.app.audio.AudioInfo
 import com.soundify.app.audio.AudioMetadata
 import com.soundify.app.audio.StemMixer
 import com.soundify.app.audio.WavExporter
+import com.soundify.app.cleanvideo.CleanVideoController
 import com.soundify.app.cleanvideo.StorageManager
 import com.soundify.app.cleanvideo.StorageUsage
 import com.soundify.app.data.Project
@@ -74,6 +75,10 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun freeUpSpace() {
+        if (CleanVideoController.state.value.isProcessing) {
+            storageMessage.value = "Wait for Clean Video to finish before cleaning storage."
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val manager = StorageManager(context)
             val temporary = manager.cleanTemporary()
