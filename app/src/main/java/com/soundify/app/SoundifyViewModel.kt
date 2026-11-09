@@ -83,6 +83,7 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
             val manager = StorageManager(context)
             val temporary = manager.cleanTemporary()
             val results = manager.deleteAllCleanVideo()
+            CleanVideoController.clearResult()
             storageUsed.value = store.storageUsedBytes()
             storage.value = manager.usage()
             val freed = temporary + results
