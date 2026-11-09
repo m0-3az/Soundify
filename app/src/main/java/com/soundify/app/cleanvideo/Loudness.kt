@@ -1,5 +1,7 @@
 package com.soundify.app.cleanvideo
 
+import java.io.File
+
 /** Measurements printed by FFmpeg's loudnorm filter in `print_format=json` mode. */
 data class LoudnessStats(
     val inputI: Double,
@@ -36,6 +38,15 @@ object Loudness {
             targetOffset = values["target_offset"] ?: return null,
         )
     }
+
+    /** Measures [file] once so the caller can match the model's input level. */
+    fun measure(file: File): LoudnessStats? = runCatching {
+        val log = Ffmpeg.run(
+            "-y -i ${Ffmpeg.quote(file)} " +
+                "-af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json -f null -"
+        )
+        parseLoudnormJson(log)
+    }.getOrNull()
 
     /**
      * A clean mix this quiet is effectively silence. Running loudnorm on it

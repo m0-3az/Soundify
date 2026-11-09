@@ -80,10 +80,13 @@ data class CleanVideoResult(
 
 /**
  * Streaming 20-minute-capable pipeline:
- *   video -> 44.1k stereo float WAV -> 6 s chunks -> voice / SFX / music / clean WAV
- *   -> loudness match on the clean mix.
+ *   video -> 44.1k stereo float WAV -> model input gain -> 6 s chunks
+ *   -> voice / SFX / music / clean WAV -> loudness match on the clean mix.
  *
- * The model runs at the source level. Stems are written with 6 dB of headroom
+ * The model's BatchNorm expects input normalized to -27 LUFS (the official
+ * MRX reference implementation does the same). Each chunk is scaled to that
+ * level before inference and every stem is divided by the same gain after,
+ * so stems stay at the source level. Stems are written with 6 dB of headroom
  * because the masks can reconstruct peaks above the input; the clean mix is
  * then matched to -16 LUFS / -1.5 dBTP so it is neither quiet nor clipping.
  * Encoded MP3/M4A and the muxed video are created on Save, not here.
@@ -143,6 +146,8 @@ class StreamingCleaner(private val context: Context) {
             val reader = WavStreamReader(audio)
             val durationMs = reader.totalFrames * 1000L / 44100L
             val totalFrames = reader.totalFrames
+            val inputGain = InferenceGain.gainFor(Loudness.measure(audio)?.inputI)
+            val restoreGain = 1f / inputGain
             val ranges = chunkRanges(totalFrames, CHUNK, HOP)
             val chunkCount = ranges.size.coerceAtLeast(1)
             val separationStarted = SystemClock.elapsedRealtime()
@@ -166,7 +171,11 @@ class StreamingCleaner(private val context: Context) {
                         val count = range.count
                         val segment = reader.read(start, count)
                         val stereo = if (segment.size == 1) arrayOf(segment[0], segment[0].copyOf()) else segment
+                        InferenceGain.scaleInPlace(stereo, inputGain)
                         val stems = separator.separate(stereo)
+                        for (stem in stems) {
+                            InferenceGain.scaleInPlace(stem, restoreGain)
+                        }
                         val music = stems[0]
                         val voice = stems[1]
                         val sfx = stems[2]
