@@ -56,14 +56,27 @@ object CleanVideoController {
     }
 
     fun cancel(context: Context) {
-        if (!_state.value.isProcessing) return
-        markCancelling()
-        runCatching {
+        val current = _state.value
+        if (!current.isProcessing || current.cancelling) return
+        val delivered = runCatching {
             context.startService(
                 Intent(context, CleanVideoService::class.java).apply {
                     action = CleanVideoService.ACTION_CANCEL
                 }
             )
+        }
+        if (delivered.isSuccess) {
+            markCancelling()
+        } else {
+            // The service is still running; keep processing true and Cancel
+            // enabled, but tell the user why the request did not go through.
+            _state.update {
+                if (!it.isProcessing) {
+                    it
+                } else {
+                    it.copy(error = "Could not stop the cleanup. Tap Cancel to try again.")
+                }
+            }
         }
     }
 

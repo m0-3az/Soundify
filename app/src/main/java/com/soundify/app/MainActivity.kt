@@ -28,7 +28,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         applyLaunchTheme()
         super.onCreate(savedInstanceState)
-        handleIntent(intent)
+        // Only route on a fresh launch; a recreation must not reopen Clean
+        // Video because the original launch intent still carries the extra.
+        if (savedInstanceState == null) handleIntent(intent)
         requestNotificationPermissionIfNeeded()
         setContent {
             val mode by themePreferences.mode.collectAsStateWithLifecycle()
@@ -65,7 +67,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.getBooleanExtra(EXTRA_OPEN_CLEAN_VIDEO, false) == true) {
+        if (consumeOpenCleanVideoExtra(intent)) {
             openCleanVideo.value = true
         }
     }
@@ -87,5 +89,15 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OPEN_CLEAN_VIDEO = "com.soundify.app.OPEN_CLEAN_VIDEO"
+
+        /**
+         * Consumes the notification extra so a later recreation of the same
+         * launch intent cannot route to Clean Video again.
+         */
+        internal fun consumeOpenCleanVideoExtra(intent: Intent?): Boolean {
+            if (intent?.getBooleanExtra(EXTRA_OPEN_CLEAN_VIDEO, false) != true) return false
+            intent.removeExtra(EXTRA_OPEN_CLEAN_VIDEO)
+            return true
+        }
     }
 }

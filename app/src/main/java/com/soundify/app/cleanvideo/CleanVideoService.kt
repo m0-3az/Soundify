@@ -63,8 +63,14 @@ class CleanVideoService : Service() {
             }
 
             ACTION_CANCEL -> {
-                CleanVideoController.markCancelling()
-                job?.cancel()
+                if (job?.isActive == true) {
+                    CleanVideoController.markCancelling()
+                    job?.cancel()
+                } else if (CleanVideoController.state.value.isProcessing) {
+                    // The intent arrived but no worker is running; do not leave
+                    // the UI stuck on "Cancelling…" forever.
+                    CleanVideoController.cancelled()
+                }
             }
         }
         return START_NOT_STICKY
@@ -162,11 +168,28 @@ class CleanVideoService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+    /**
+     * API 34 short-service callback. Kept for safety; Clean Video uses the
+     * dataSync type, so Android 15 delivers the two-argument overload below.
+     */
     override fun onTimeout(startId: Int) {
-        // Android 15 limits dataSync foreground services. Stop cleanly so the
-        // worker can remove partial stems instead of being killed mid-write.
+        handleTimeout(startId)
+    }
+
+    /**
+     * Android 15 invokes this overload for dataSync foreground services when
+     * their background budget is exhausted. Cancel the worker and stop cleanly
+     * so partial stems are removed instead of being killed mid-write.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        handleTimeout(startId)
+    }
+
+    private fun handleTimeout(startId: Int) {
         CleanVideoController.markCancelling()
         job?.cancel()
+        CleanVideoController.cancelled()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf(startId)
     }
 
