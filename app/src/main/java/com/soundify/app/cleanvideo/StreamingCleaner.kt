@@ -173,6 +173,7 @@ class StreamingCleaner(private val context: Context) {
                         val stereo = if (segment.size == 1) arrayOf(segment[0], segment[0].copyOf()) else segment
                         InferenceGain.scaleInPlace(stereo, inputGain)
                         val stems = separator.separate(stereo)
+                        ResidualMixer.apply(stereo, stems, RESIDUAL_MODE)
                         for (stem in stems) {
                             InferenceGain.scaleInPlace(stem, restoreGain)
                         }
@@ -345,5 +346,7 @@ class StreamingCleaner(private val context: Context) {
 
         /** Intermediate stems use 6 dB of headroom before the 16-bit conversion. */
         private const val STEM_HEADROOM = 0.5f
+        /** Off until the bake-off shows residual assignment helps on real clips. */
+        private val RESIDUAL_MODE = ResidualMode.PASS
     }
 }

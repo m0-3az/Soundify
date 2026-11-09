@@ -156,7 +156,8 @@ fun SettingsScreen(
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = { confirmFree = true },
-                enabled = storage != null && storage.userDataBytes > 0,
+                enabled = storage != null &&
+                    (storage.cleanVideoBytes + storage.cacheBytes) > 0,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Free up space")

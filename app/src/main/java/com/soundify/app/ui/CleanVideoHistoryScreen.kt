@@ -206,7 +206,8 @@ private fun StorageCard(
             Spacer(Modifier.height(4.dp))
             Button(
                 onClick = onFreeUpSpace,
-                enabled = storage != null && storage.userDataBytes > 0,
+                enabled = storage != null &&
+                    (storage.cleanVideoBytes + storage.cacheBytes) > 0,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Free up space")

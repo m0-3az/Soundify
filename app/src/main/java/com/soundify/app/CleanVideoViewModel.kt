@@ -83,8 +83,9 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
         duplicate.value = null
         viewModelScope.launch(Dispatchers.IO) {
             val fp = VideoFingerprint.read(getApplication(), uri)
+            if (selectedUri.value != uri) return@launch
             fingerprint.value = fp
-            if (fp != null) {
+            if (fp != null && !isProcessing.value) {
                 val entry = historyStore.find(fp)
                 if (entry != null && resultFor(entry) != null) {
                     duplicate.value = entry
