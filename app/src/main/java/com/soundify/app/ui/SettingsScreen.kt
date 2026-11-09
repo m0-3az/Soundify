@@ -149,7 +149,7 @@ fun SettingsScreen(
                 StorageRow("Projects", storage.projectsBytes)
                 StorageRow("Clean Video results", storage.cleanVideoBytes)
                 StorageRow("Temporary files", storage.cacheBytes)
-                StorageRow("App and model", storage.modelBytes)
+                StorageRow("App and model", storage.appBytes + storage.modelBytes)
                 Spacer(Modifier.height(4.dp))
                 StorageRow("Used by Soundify", storage.totalBytes, bold = true)
             }

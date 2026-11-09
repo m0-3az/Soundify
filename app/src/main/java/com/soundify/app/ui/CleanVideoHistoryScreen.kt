@@ -193,7 +193,7 @@ private fun StorageCard(
                 StorageRow("Projects", storage.projectsBytes)
                 StorageRow("Clean Video results", storage.cleanVideoBytes)
                 StorageRow("Temporary files", storage.cacheBytes)
-                StorageRow("App and model", storage.modelBytes)
+                StorageRow("App and model", storage.appBytes + storage.modelBytes)
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
