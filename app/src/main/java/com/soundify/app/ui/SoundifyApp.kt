@@ -18,10 +18,11 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.soundify.app.Screen
 import com.soundify.app.SoundifyViewModel
+import com.soundify.app.data.ThemePreferences
 import java.io.File
 
 @Composable
-fun SoundifyApp(viewModel: SoundifyViewModel) {
+fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences) {
     val screen by viewModel.screen.collectAsStateWithLifecycle()
     val projects by viewModel.projects.collectAsStateWithLifecycle()
     val current by viewModel.current.collectAsStateWithLifecycle()
@@ -110,6 +111,7 @@ fun SoundifyApp(viewModel: SoundifyViewModel) {
 
             is Screen.Settings -> SettingsScreen(
                 storageUsed = storage,
+                theme = themePreferences,
                 onBack = viewModel::back
             )
 
