@@ -8,6 +8,10 @@ import com.arthenica.ffmpegkit.ReturnCode
 import com.soundify.app.cleanvideo.StreamingCleaner
 import com.soundify.app.cleanvideo.Wav
 import com.soundify.app.cleanvideo.WavData
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -25,6 +29,33 @@ class CleanVideoPipelineTest {
 
     @Test
     fun separatesLongerVideo() = run("clip60.mp4", 60_000)
+
+    @Test
+    fun cancellingDoesNotWriteFinalOutput() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val video = File(context.cacheDir, "cleanvideo_cancel.mp4")
+        instrumentation.context.assets.open("cleanvideo/clip5.mp4").use { input ->
+            video.outputStream().use { input.copyTo(it) }
+        }
+        val exports = File(context.filesDir, "exports/cleanvideo")
+        val before = exports.listFiles()?.map { it.name }?.toSet() ?: emptySet()
+
+        val job = launch(Dispatchers.Default) {
+            StreamingCleaner(context).clean(Uri.fromFile(video), "clip5.mp4") { _, _ -> }
+        }
+        delay(750)
+        job.cancelAndJoin()
+
+        val created = (exports.listFiles()?.map { it.name }?.toSet() ?: emptySet()) - before
+        val finished = created.filter { name ->
+            File(exports, name).listFiles()?.any { it.name == "cleaned.wav" } == true
+        }
+        assertTrue("cancelled run wrote a final output: $finished", finished.isEmpty())
+        created.forEach { File(exports, it).deleteRecursively() }
+        video.delete()
+        Unit
+    }
 
     private fun run(asset: String, minimumVideoBytes: Long) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()

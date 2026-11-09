@@ -5,6 +5,8 @@ import android.net.Uri
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.PI
@@ -62,6 +64,7 @@ class StreamingCleaner(private val context: Context) {
 
         onProgress(0.04f, "Preparing on-device model…")
         val model = ensureModel(onProgress)
+        currentCoroutineContext().ensureActive()
 
         val cleanedRaw = File(work, "cleaned_raw.wav")
         val cleanedWav = File(outDir, "cleaned.wav")
@@ -76,6 +79,7 @@ class StreamingCleaner(private val context: Context) {
             ChunkSeparator(model.absolutePath).use { separator ->
                 var start = 0L
                 while (start < reader.totalFrames) {
+                    currentCoroutineContext().ensureActive()
                     val count = min(CHUNK.toLong(), reader.totalFrames - start).toInt()
                     val segment = reader.read(start, count)
                     val stereo = if (segment.size == 1) arrayOf(segment[0], segment[0].copyOf()) else segment
@@ -103,17 +107,21 @@ class StreamingCleaner(private val context: Context) {
             reader.close()
         }
 
+        currentCoroutineContext().ensureActive()
         onProgress(0.92f, "Matching loudness…")
         normalizeLoudness(cleanedRaw, cleanedWav)
 
+        currentCoroutineContext().ensureActive()
         onProgress(0.94f, "Encoding MP3…")
         val mp3 = File(outDir, "cleaned.mp3")
         runFfmpeg("-y -i ${q(cleanedWav)} -c:a libmp3lame -b:a 192k ${q(mp3)}")
 
+        currentCoroutineContext().ensureActive()
         onProgress(0.96f, "Encoding M4A…")
         val m4a = File(outDir, "cleaned.m4a")
         runFfmpeg("-y -i ${q(cleanedWav)} -c:a aac -b:a 192k ${q(m4a)}")
 
+        currentCoroutineContext().ensureActive()
         onProgress(0.98f, "Muxing cleaned audio into the video…")
         val outExt = when (inputExt) {
             "mkv" -> "mkv"

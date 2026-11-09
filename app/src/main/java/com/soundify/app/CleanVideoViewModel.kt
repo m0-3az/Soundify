@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.soundify.app.cleanvideo.CleanVideoResult
 import com.soundify.app.cleanvideo.StreamingCleaner
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -44,20 +45,29 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 result.value = output
                 status.value = "Done"
+            } catch (c: CancellationException) {
+                status.value = "Cancelled"
+                throw c
             } catch (t: Throwable) {
                 message.value = t.message ?: "Clean Video failed"
                 status.value = "Failed"
             } finally {
                 isProcessing.value = false
+                job = null
             }
         }
     }
 
+    /**
+     * Keeps [isProcessing] true until the worker actually unwinds. This blocks a
+     * second run from deleting the shared cache directory while the cancelled
+     * run is still using it.
+     */
     fun cancel() {
-        job?.cancel()
-        job = null
-        isProcessing.value = false
-        status.value = "Cancelled"
+        val running = job ?: return
+        if (!running.isActive) return
+        status.value = "Cancelling…"
+        running.cancel()
     }
 
     fun clearMessage() {

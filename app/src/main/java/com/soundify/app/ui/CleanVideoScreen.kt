@@ -134,7 +134,10 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(status ?: "Working…", style = MaterialTheme.typography.bodyMedium)
-                TextButton(onClick = viewModel::cancel) { Text("Cancel") }
+                val cancelling = status == "Cancelling…"
+                TextButton(onClick = viewModel::cancel, enabled = !cancelling) {
+                    Text(if (cancelling) "Cancelling…" else "Cancel")
+                }
             }
 
             result?.let { ResultSection(it) }
