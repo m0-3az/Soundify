@@ -21,8 +21,13 @@ data class CleanVideoResult(
 
 /**
  * Streaming 20-minute-capable pipeline:
- *   video -> 44.1k stereo WAV (-27 LUFS) -> 6 s chunks -> cleaned/music WAV
- *   -> MP3 + M4A + same-container video with the original video stream copied.
+ *   video -> 44.1k stereo float WAV -> 6 s chunks -> cleaned/music WAV
+ *   -> loudness match -> MP3 + M4A + same-container video.
+ *
+ * The model runs at the source level. Stems are written with 6 dB of headroom
+ * because the masks can reconstruct peaks above the input; the cleaned mix is
+ * then matched to [TARGET_LUFS] / [TARGET_TP] so it is neither quiet nor
+ * clipping.
  *
  * Only one chunk plus a 1 s overlap tail is held in RAM.
  */
@@ -53,19 +58,17 @@ class StreamingCleaner(private val context: Context) {
 
         onProgress(0.02f, "Extracting audio…")
         val audio = File(work, "audio.wav")
-        runFfmpeg(
-            "-y -i ${q(input)} -vn -ac 2 -ar 44100 " +
-                "-af loudnorm=I=-27:TP=-2:LRA=11 -c:a pcm_s16le ${q(audio)}"
-        )
+        runFfmpeg("-y -i ${q(input)} -vn -ac 2 -ar 44100 -c:a pcm_f32le ${q(audio)}")
 
         onProgress(0.04f, "Preparing on-device model…")
         val model = ensureModel(onProgress)
 
+        val cleanedRaw = File(work, "cleaned_raw.wav")
         val cleanedWav = File(outDir, "cleaned.wav")
         val musicWav = File(outDir, "music.wav")
         val reader = WavStreamReader(audio)
-        val cleanedWriter = WavStreamWriter(cleanedWav, 2, 44100)
-        val musicWriter = WavStreamWriter(musicWav, 2, 44100)
+        val cleanedWriter = WavStreamWriter(cleanedRaw, 2, 44100, gain = STEM_HEADROOM)
+        val musicWriter = WavStreamWriter(musicWav, 2, 44100, gain = STEM_HEADROOM)
         val cleanedMerger = StreamMerger(OVERLAP)
         val musicMerger = StreamMerger(OVERLAP)
 
@@ -100,15 +103,18 @@ class StreamingCleaner(private val context: Context) {
             reader.close()
         }
 
-        onProgress(0.92f, "Encoding MP3…")
+        onProgress(0.92f, "Matching loudness…")
+        normalizeLoudness(cleanedRaw, cleanedWav)
+
+        onProgress(0.94f, "Encoding MP3…")
         val mp3 = File(outDir, "cleaned.mp3")
         runFfmpeg("-y -i ${q(cleanedWav)} -c:a libmp3lame -b:a 192k ${q(mp3)}")
 
-        onProgress(0.95f, "Encoding M4A…")
+        onProgress(0.96f, "Encoding M4A…")
         val m4a = File(outDir, "cleaned.m4a")
         runFfmpeg("-y -i ${q(cleanedWav)} -c:a aac -b:a 192k ${q(m4a)}")
 
-        onProgress(0.97f, "Muxing cleaned audio into the video…")
+        onProgress(0.98f, "Muxing cleaned audio into the video…")
         val outExt = when (inputExt) {
             "mkv" -> "mkv"
             "webm" -> "webm"
@@ -142,12 +148,39 @@ class StreamingCleaner(private val context: Context) {
         return model
     }
 
-    private fun runFfmpeg(command: String) {
+    private fun runFfmpeg(command: String): String {
         val session = FFmpegKit.execute(command)
         val code = session.returnCode
         if (!ReturnCode.isSuccess(code)) {
             throw IllegalStateException("FFmpeg failed ($code). Check the selected file format.")
         }
+        return session.output ?: ""
+    }
+
+    /**
+     * Two-pass loudness match. The first pass measures the cleaned mix; the
+     * second applies a linear gain with a true-peak limit. If the measurement
+     * is unreadable (silence, truncated log), fall back to single-pass mode.
+     */
+    private fun normalizeLoudness(input: File, output: File) {
+        val measure = runFfmpeg(
+            "-y -i ${q(input)} " +
+                "-af loudnorm=I=$TARGET_LUFS:TP=$TARGET_TP:LRA=11:print_format=json -f null -"
+        )
+        val stats = Loudness.parseLoudnormJson(measure)
+        val filter = if (stats == null) {
+            "loudnorm=I=$TARGET_LUFS:TP=$TARGET_TP:LRA=11"
+        } else {
+            "loudnorm=I=$TARGET_LUFS:TP=$TARGET_TP:LRA=11" +
+                ":measured_I=${stats.inputI}" +
+                ":measured_TP=${stats.inputTp}" +
+                ":measured_LRA=${stats.inputLra}" +
+                ":measured_thresh=${stats.inputThresh}" +
+                ":offset=${stats.targetOffset}:linear=true"
+        }
+        runFfmpeg(
+            "-y -i ${q(input)} -af \"$filter\" -ar 44100 -c:a pcm_s16le ${q(output)}"
+        )
     }
 
     private fun q(file: File): String = "\"${file.absolutePath.replace("\"", "\\\"")}\""
@@ -201,5 +234,11 @@ class StreamingCleaner(private val context: Context) {
         private const val CHUNK = 6 * 44100
         private const val OVERLAP = 44100
         private const val HOP = CHUNK - OVERLAP
+
+        /** Intermediate stems use 6 dB of headroom before the 16-bit conversion. */
+        private const val STEM_HEADROOM = 0.5f
+
+        private const val TARGET_LUFS = -16.0
+        private const val TARGET_TP = -1.5
     }
 }

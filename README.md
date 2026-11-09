@@ -51,8 +51,9 @@ page. The release APK includes the separation model.
 ### Clean Video
 
 - Import any video through the system file picker
-- Extract and loudness-normalize audio to 44.1 kHz stereo
+- Extract audio at its original level to 44.1 kHz stereo float
 - Separate music / voice / sound effects with the bundled MRX model
+- Match the cleaned mix to -16 LUFS / -1.5 dBTP after separation
 - Stream 6-second chunks to disk so 20-minute videos do not exhaust RAM
 - Export cleaned audio as MP3 or M4A
 - Mux cleaned audio back into the video, copying the original video stream

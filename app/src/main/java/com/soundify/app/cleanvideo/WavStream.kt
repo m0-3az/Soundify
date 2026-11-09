@@ -19,6 +19,7 @@ class WavStreamReader(file: File) : Closeable {
     val totalFrames: Long
     private val dataOffset: Long
     private val bytesPerSample: Int
+    private val floatSamples: Boolean
 
     init {
         val headerSize = min(raf.length(), 64 * 1024L).toInt()
@@ -56,10 +57,13 @@ class WavStreamReader(file: File) : Closeable {
             offset = body + size + (size and 1)
         }
         require(data >= 0 && ch in 1..2 && rate > 0) { "Missing fmt/data chunk" }
-        require(audioFormat == 1 && bits == 16) { "Expected 16-bit PCM, got $audioFormat/$bits" }
+        require(
+            (audioFormat == 1 && bits == 16) || (audioFormat == 3 && bits == 32)
+        ) { "Expected 16-bit PCM or 32-bit float, got $audioFormat/$bits" }
         sampleRate = rate
         channels = ch
         bytesPerSample = bits / 8
+        floatSamples = audioFormat == 3
         dataOffset = data
         totalFrames = dataSize.toLong() / (channels * bytesPerSample)
     }
@@ -72,13 +76,14 @@ class WavStreamReader(file: File) : Closeable {
         raf.seek(dataOffset + startFrame * channels * bytesPerSample)
         raf.readFully(bytes)
         val out = Array(channels) { FloatArray(n) }
-        var p = 0
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until n) {
             for (c in 0 until channels) {
-                val lo = bytes[p].toInt() and 0xff
-                val hi = bytes[p + 1].toInt()
-                out[c][i] = ((lo or (hi shl 8)).toShort()) / 32768.0f
-                p += 2
+                out[c][i] = if (floatSamples) {
+                    buffer.getFloat()
+                } else {
+                    buffer.getShort() / 32768.0f
+                }
             }
         }
         return out
@@ -103,6 +108,7 @@ class WavStreamWriter(
     file: File,
     private val channels: Int,
     private val sampleRate: Int,
+    private val gain: Float = 1f,
 ) : Closeable {
     private val raf = RandomAccessFile(file, "rw")
     private var dataBytes = 0L
@@ -122,7 +128,7 @@ class WavStreamWriter(
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until count) {
             for (c in 0 until channels) {
-                val v = (chunk[c][offset + i].coerceIn(-1f, 1f) * 32767f).toInt()
+                val v = ((chunk[c][offset + i] * gain).coerceIn(-1f, 1f) * 32767f).toInt()
                 buffer.putShort(v.toShort())
             }
         }
