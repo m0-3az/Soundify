@@ -53,7 +53,8 @@ class CleanVideoHistoryAndroidTest {
     fun fingerprintOfARealContentUriIsStable() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
-        val source = File(context.cacheDir, "fingerprint-source.mp4").apply {
+        val exports = File(context.filesDir, "exports").apply { mkdirs() }
+        val source = File(exports, "fingerprint-source.mp4").apply {
             writeBytes(ByteArray(700_000) { index -> (index % 251).toByte() })
         }
         val uri = FileProvider.getUriForFile(
