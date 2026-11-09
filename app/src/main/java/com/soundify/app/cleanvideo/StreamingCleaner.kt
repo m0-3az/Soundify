@@ -143,7 +143,8 @@ class StreamingCleaner(private val context: Context) {
             val reader = WavStreamReader(audio)
             val durationMs = reader.totalFrames * 1000L / 44100L
             val totalFrames = reader.totalFrames
-            val chunkCount = ((totalFrames + HOP - 1) / HOP).toInt().coerceAtLeast(1)
+            val ranges = chunkRanges(totalFrames, CHUNK, HOP)
+            val chunkCount = ranges.size.coerceAtLeast(1)
             val separationStarted = SystemClock.elapsedRealtime()
             val voiceWriter = WavStreamWriter(voiceWav, 2, 44100, gain = STEM_HEADROOM)
             val sfxWriter = WavStreamWriter(sfxWav, 2, 44100, gain = STEM_HEADROOM)
@@ -159,10 +160,10 @@ class StreamingCleaner(private val context: Context) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             try {
                 ChunkSeparator(model.absolutePath).use { separator ->
-                    var start = 0L
-                    while (start < reader.totalFrames) {
+                    for ((index, range) in ranges.withIndex()) {
                         currentCoroutineContext().ensureActive()
-                        val count = min(CHUNK.toLong(), reader.totalFrames - start).toInt()
+                        val start = range.start
+                        val count = range.count
                         val segment = reader.read(start, count)
                         val stereo = if (segment.size == 1) arrayOf(segment[0], segment[0].copyOf()) else segment
                         val stems = separator.separate(stereo)
@@ -172,16 +173,13 @@ class StreamingCleaner(private val context: Context) {
                         val clean = Array(2) { ch ->
                             FloatArray(count) { i -> voice[ch][i] + sfx[ch][i] }
                         }
-                        val first = start == 0L
-                        val last = start + count >= reader.totalFrames
-                        voiceMerger.accept(voiceWriter, voice, first, last)
-                        sfxMerger.accept(sfxWriter, sfx, first, last)
-                        musicMerger.accept(musicWriter, music, first, last)
-                        cleanMerger.accept(cleanWriter, clean, first, last)
+                        voiceMerger.accept(voiceWriter, voice, range.isFirst, range.isLast)
+                        sfxMerger.accept(sfxWriter, sfx, range.isFirst, range.isLast)
+                        musicMerger.accept(musicWriter, music, range.isFirst, range.isLast)
+                        cleanMerger.accept(cleanWriter, clean, range.isFirst, range.isLast)
 
                         val processed = min(start + count, totalFrames)
-                        val chunkIndex = (start / HOP).toInt() + 1
-                        start += HOP
+                        val chunkIndex = index + 1
                         val fraction = if (totalFrames > 0) processed.toFloat() / totalFrames else 1f
                         val elapsedMs = SystemClock.elapsedRealtime() - separationStarted
                         val eta = if (fraction > 0.01f && elapsedMs > 0L) {
