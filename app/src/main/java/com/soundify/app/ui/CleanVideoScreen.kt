@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -63,6 +64,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,7 +88,7 @@ import java.util.Locale
 
 private enum class SaveKind { AUDIO, VIDEO }
 
-private sealed interface PendingSave {
+internal sealed interface PendingSave {
     data class Audio(val format: AudioFormat) : PendingSave
     data class Video(val format: VideoFormat) : PendingSave
 }
@@ -110,13 +112,16 @@ fun CleanVideoScreen(onBack: () -> Unit) {
 
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
-    var pendingSave by remember { mutableStateOf<PendingSave?>(null) }
+    // Keep the pending format in saved state: the SAF picker can recreate the
+    // activity, and the result callback must still know what to encode.
+    var pendingSaveKey by rememberSaveable { mutableStateOf<String?>(null) }
     var saveSheetOpen by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
 
     val saver = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { activityResult ->
         val target = activityResult.data?.data
-        val pending = pendingSave
-        pendingSave = null
+        val pending = pendingSave(pendingSaveKey)
+        pendingSaveKey = null
         if (activityResult.resultCode == Activity.RESULT_OK && target != null && pending != null) {
             when (pending) {
                 is PendingSave.Audio -> viewModel.saveAudio(pending.format, target)
@@ -146,7 +151,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
     }
 
     val launchSave = { pending: PendingSave, mime: String, fileName: String ->
-        pendingSave = pending
+        pendingSaveKey = pending.key()
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = mime
@@ -214,6 +219,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                     saveStatus = saveStatus,
                     onSelect = viewModel::selectStem,
                     onSave = { saveSheetOpen = true },
+                    onDelete = { confirmDelete = true },
                 )
             }
 
@@ -225,6 +231,30 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+
+    if (confirmDelete && result != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete stems?") },
+            text = {
+                Text(
+                    "This removes the four Clean Video stems from Soundify's exports " +
+                        "folder. Files you already saved are kept."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        viewModel.deleteStems()
+                    }
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Keep") }
+            },
+        )
     }
 
     val output = result
@@ -258,9 +288,14 @@ fun CleanVideoScreen(onBack: () -> Unit) {
 @Composable
 private fun ProcessingCard(state: CleanVideoController.State, onCancel: () -> Unit) {
     val target = state.progress.coerceIn(0f, 1f)
+    val animationMillis = progressAnimationMillis(
+        etaSeconds = state.etaSeconds,
+        chunkIndex = state.chunkIndex,
+        chunkCount = state.chunkCount,
+    )
     val animated by animateFloatAsState(
         targetValue = target,
-        animationSpec = tween(durationMillis = 700, easing = LinearEasing),
+        animationSpec = tween(durationMillis = animationMillis, easing = LinearEasing),
         label = "clean-progress",
     )
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -275,7 +310,7 @@ private fun ProcessingCard(state: CleanVideoController.State, onCancel: () -> Un
     } else {
         0
     }
-    val cancelling = state.detail == "Cancelling…"
+    val cancelling = state.cancelling
 
     Card(Modifier.fillMaxWidth()) {
         Column(
@@ -386,17 +421,31 @@ private fun ResultSection(
     saveStatus: String?,
     onSelect: (CleanStem) -> Unit,
     onSave: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val player = remember { MediaPlayer() }
     var playing by remember { mutableStateOf<CleanStem?>(null) }
+    var loaded by remember { mutableStateOf<CleanStem?>(null) }
     val volumes = remember { mutableStateMapOf<CleanStem, Float>() }
 
     DisposableEffect(player) {
         player.setOnCompletionListener { playing = null }
+        player.setOnErrorListener { _, _, _ ->
+            playing = null
+            true
+        }
+        player.setOnPreparedListener { media ->
+            val kind = loaded ?: return@setOnPreparedListener
+            val volume = volumes[kind] ?: 1f
+            media.setVolume(volume, volume)
+            media.start()
+            playing = kind
+        }
         onDispose { player.release() }
     }
     LaunchedEffect(result) {
         runCatching { player.reset() }
+        loaded = null
         playing = null
     }
 
@@ -409,11 +458,8 @@ private fun ResultSection(
         runCatching {
             player.reset()
             player.setDataSource(stem.file.absolutePath)
-            player.prepare()
-            val volume = volumes[stem.kind] ?: 1f
-            player.setVolume(volume, volume)
-            player.start()
-            playing = stem.kind
+            loaded = stem.kind
+            player.prepareAsync()
         }
     }
 
@@ -431,9 +477,21 @@ private fun ResultSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                TextButton(onClick = onDelete, enabled = !isSaving) {
+                    Text("Delete stems")
+                }
+                Spacer(Modifier.width(8.dp))
                 Button(onClick = onSave, enabled = !isSaving) {
                     Text(if (isSaving) "Saving…" else "Save")
                 }
+            }
+
+            result.cleanNote?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
             saveStatus?.let {
@@ -502,8 +560,9 @@ private fun StemRow(
                     Text(stem.kind.label, style = MaterialTheme.typography.titleSmall)
                     Text(
                         "${formatDuration(stem.durationMs)} · RMS ${
-                            "%.1f".format(Locale.US, stem.rmsDb)
-                        } dBFS · peak ${"%.1f".format(Locale.US, stem.peakDb)} dBFS",
+                            "%.1f".format(Locale.US, stem.displayRmsDb)
+                        } dBFS · peak ${"%.1f".format(Locale.US, stem.displayPeakDb)} dBFS" +
+                            if (stem.kind == CleanStem.CLEAN) "" else " · +6 dB on save",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -516,7 +575,7 @@ private fun StemRow(
                 }
             }
             LinearProgressIndicator(
-                progress = { levelFraction(stem.rmsDb) },
+                progress = { levelFraction(stem.displayRmsDb) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(6.dp),
@@ -623,6 +682,41 @@ private fun stemIcon(kind: CleanStem) = when (kind) {
 
 private fun levelFraction(rmsDb: Float): Float =
     ((rmsDb + 60f) / 60f).coerceIn(0f, 1f)
+
+/**
+ * Progress arrives once per 6 s chunk, so tween across roughly the time the
+ * next chunk is expected to take instead of stalling for 7–10 s.
+ */
+internal fun progressAnimationMillis(
+    etaSeconds: Long?,
+    chunkIndex: Int,
+    chunkCount: Int,
+): Int {
+    val remaining = (chunkCount - chunkIndex).coerceAtLeast(1)
+    val perChunk = etaSeconds?.let { it * 1000L / remaining } ?: 700L
+    return perChunk.coerceIn(500L, 10_000L).toInt()
+}
+
+internal fun PendingSave.key(): String = when (this) {
+    is PendingSave.Audio -> "audio:${format.name}"
+    is PendingSave.Video -> "video:${format.name}"
+}
+
+internal fun pendingSave(key: String?): PendingSave? {
+    if (key == null) return null
+    val name = key.substringAfter(':', "")
+    return when {
+        key.startsWith("audio:") -> AudioFormat.entries
+            .firstOrNull { it.name == name }
+            ?.let { PendingSave.Audio(it) }
+
+        key.startsWith("video:") -> VideoFormat.entries
+            .firstOrNull { it.name == name }
+            ?.let { PendingSave.Video(it) }
+
+        else -> null
+    }
+}
 
 private fun formatDuration(ms: Long): String = formatClock(ms / 1000)
 

@@ -27,6 +27,7 @@ object CleanVideoController {
         val result: CleanVideoResult? = null,
         val error: String? = null,
         val cancelled: Boolean = false,
+        val cancelling: Boolean = false,
     )
 
     private val _state = MutableStateFlow(State())
@@ -45,32 +46,41 @@ object CleanVideoController {
             putExtra(CleanVideoService.EXTRA_URI, uri)
             putExtra(CleanVideoService.EXTRA_NAME, name)
         }
-        ContextCompat.startForegroundService(context, intent)
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (t: Throwable) {
+            // Android 12+ can refuse a foreground start (battery saver, restricted
+            // settings). Do not leave the UI stuck in a processing state.
+            fail(t.message ?: "Could not start background processing.")
+        }
     }
 
     fun cancel(context: Context) {
-        val current = _state.value
-        if (!current.isProcessing) return
-        _state.value = current.copy(stage = CleanStage.FINALIZING, detail = "Cancelling…")
-        context.startService(
-            Intent(context, CleanVideoService::class.java).apply {
-                action = CleanVideoService.ACTION_CANCEL
-            }
-        )
+        if (!_state.value.isProcessing) return
+        markCancelling()
+        runCatching {
+            context.startService(
+                Intent(context, CleanVideoService::class.java).apply {
+                    action = CleanVideoService.ACTION_CANCEL
+                }
+            )
+        }
     }
 
     fun update(progress: CleanProgress) {
-        _state.update { current ->
-            if (!current.isProcessing) {
-                current
+        _state.update { current -> reduceProgress(current, progress) }
+    }
+
+    /** Keeps "Cancelling…" on screen even if a worker callback races the cancel. */
+    fun markCancelling() {
+        _state.update {
+            if (!it.isProcessing) {
+                it
             } else {
-                current.copy(
-                    progress = progress.fraction,
-                    stage = progress.stage,
-                    detail = progress.detail,
-                    chunkIndex = progress.chunkIndex,
-                    chunkCount = progress.chunkCount,
-                    etaSeconds = progress.etaSeconds,
+                it.copy(
+                    cancelling = true,
+                    stage = CleanStage.FINALIZING,
+                    detail = "Cancelling…",
                 )
             }
         }
@@ -85,6 +95,7 @@ object CleanVideoController {
                 detail = "Done",
                 result = result,
                 etaSeconds = null,
+                cancelling = false,
             )
         }
     }
@@ -96,6 +107,7 @@ object CleanVideoController {
                 error = message,
                 detail = "Failed",
                 etaSeconds = null,
+                cancelling = false,
             )
         }
     }
@@ -107,6 +119,7 @@ object CleanVideoController {
                 cancelled = true,
                 detail = "Cancelled",
                 etaSeconds = null,
+                cancelling = false,
             )
         }
     }
@@ -115,9 +128,39 @@ object CleanVideoController {
         _state.update { it.copy(error = null) }
     }
 
-    /** Drop the previous result when a new video is selected. */
-    fun reset() {
+    /** Drop the previous result and its stem directory when a new video is selected. */
+    fun reset(context: Context) {
         if (_state.value.isProcessing) return
+        CleanVideoStorage.deleteResult(context, _state.value.result)
         _state.value = State()
     }
+
+    /** Delete the current stems but keep the selected source video and saved files. */
+    fun deleteResult(context: Context) {
+        if (_state.value.isProcessing) return
+        CleanVideoStorage.deleteResult(context, _state.value.result)
+        _state.update {
+            it.copy(
+                result = null,
+                progress = 0f,
+                stage = null,
+                detail = null,
+                etaSeconds = null,
+            )
+        }
+    }
+
+    internal fun reduceProgress(current: State, progress: CleanProgress): State =
+        if (!current.isProcessing || current.cancelling) {
+            current
+        } else {
+            current.copy(
+                progress = progress.fraction,
+                stage = progress.stage,
+                detail = progress.detail,
+                chunkIndex = progress.chunkIndex,
+                chunkCount = progress.chunkCount,
+                etaSeconds = progress.etaSeconds,
+            )
+        }
 }

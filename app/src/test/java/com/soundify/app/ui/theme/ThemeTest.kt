@@ -3,6 +3,7 @@ package com.soundify.app.ui.theme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.max
@@ -26,6 +27,15 @@ class ThemeTest {
         val scheme = soundifyColorScheme(ThemeMode.AMOLED, ThemeAccent.BLUE, systemDark = false)
         assertEquals(Color.Black, scheme.background)
         assertEquals(Color.Black, scheme.surface)
+    }
+
+    @Test
+    fun forcedModesIgnoreTheSystemFlag() {
+        assertTrue(isDarkMode(ThemeMode.DARK, systemDark = false))
+        assertTrue(isDarkMode(ThemeMode.AMOLED, systemDark = false))
+        assertFalse(isDarkMode(ThemeMode.LIGHT, systemDark = true))
+        assertTrue(isDarkMode(ThemeMode.SYSTEM, systemDark = true))
+        assertFalse(isDarkMode(ThemeMode.SYSTEM, systemDark = false))
     }
 
     @Test

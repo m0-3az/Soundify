@@ -44,13 +44,21 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun select(uri: Uri, name: String?) {
-        CleanVideoController.reset()
+        CleanVideoController.reset(getApplication())
         selectedUri.value = uri
         selectedName.value = name
         result.value = null
         selectedStem.value = CleanStem.CLEAN
         progress.value = 0f
         status.value = null
+    }
+
+    fun deleteStems() {
+        if (isSaving.value) return
+        CleanVideoController.deleteResult(getApplication())
+        result.value = null
+        selectedStem.value = CleanStem.CLEAN
+        message.value = "The four stems were deleted"
     }
 
     fun clean() {

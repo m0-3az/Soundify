@@ -10,18 +10,23 @@ data class LoudnessStats(
 )
 
 object Loudness {
+    /** Below this integrated loudness the mix is treated as silence/noise. */
+    const val NEAR_SILENT_LUFS = -50.0
+    /** Below this true peak the mix is treated as silence/noise. */
+    const val NEAR_SILENT_TP = -50.0
+
     private val number = Regex(
-        "\"(input_i|input_tp|input_lra|input_thresh|target_offset)\"\\s*:\\s*\"?(-?[0-9]+(?:\\.[0-9]+)?)\"?"
+        "\"(input_i|input_tp|input_lra|input_thresh|target_offset)\"\\s*:\\s*\"?(-?(?:[0-9]+(?:\\.[0-9]+)?|inf))\"?"
     )
 
     /**
      * Parses the JSON block FFmpeg writes to its log during a loudnorm measurement
-     * pass. Returns null for silence or truncated output so the caller can fall
-     * back to a single-pass normalization instead of failing the export.
+     * pass. Returns null for a truncated/unreadable block; silence is reported as
+     * `-inf` and parsed normally so the caller can skip amplification.
      */
     fun parseLoudnormJson(log: String): LoudnessStats? {
         val values = number.findAll(log).associate { match ->
-            match.groupValues[1] to match.groupValues[2].toDoubleOrNull()
+            match.groupValues[1] to parseNumber(match.groupValues[2])
         }
         return LoudnessStats(
             inputI = values["input_i"] ?: return null,
@@ -30,5 +35,18 @@ object Loudness {
             inputThresh = values["input_thresh"] ?: return null,
             targetOffset = values["target_offset"] ?: return null,
         )
+    }
+
+    /**
+     * A clean mix this quiet is effectively silence. Running loudnorm on it
+     * would add 30+ dB of gain and make separation noise audible.
+     */
+    fun isNearSilent(stats: LoudnessStats): Boolean =
+        stats.inputI <= NEAR_SILENT_LUFS || stats.inputTp <= NEAR_SILENT_TP
+
+    private fun parseNumber(raw: String): Double? = when {
+        raw.equals("-inf", ignoreCase = true) -> Double.NEGATIVE_INFINITY
+        raw.equals("inf", ignoreCase = true) -> Double.POSITIVE_INFINITY
+        else -> raw.toDoubleOrNull()
     }
 }

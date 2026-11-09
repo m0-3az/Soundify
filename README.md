@@ -53,13 +53,18 @@ page. The release APK includes the separation model.
 - Import any video through the system file picker
 - Extract audio at its original level to 44.1 kHz stereo float
 - Separate music / voice / sound effects with the bundled MRX model
-- Match the cleaned mix to -16 LUFS / -1.5 dBTP after separation
+- Match the cleaned mix to -16 LUFS / -1.5 dBTP after separation; near-silent
+  mixes keep their existing level instead of being boosted into noise
 - Stream 6-second chunks to disk so 20-minute videos do not exhaust RAM
 - Four outputs: voice, sound effects, music and clean mix, each with playback and a level control
 - Foreground service with a progress notification, chunk count, ETA and Cancel
+- Cancelling or failing removes the partial stem files automatically
+- **Delete stems** removes the four outputs from the app without touching files you saved
 - Save one track as WAV, FLAC, MP3 or M4A through the system document picker
 - Put a track back into the video, copying the original video stream
-- MP4 is preferred for H.264/HEVC/AV1, MKV for VP9/unknown, WebM only for VP8/VP9/AV1
+- MP4 is offered only for H.264/HEVC/AV1/MPEG-4 video; MKV is the fallback for
+  other codecs (VP8/VP9, MPEG-2, Theora, unknown) and WebM only for VP8/VP9/AV1
+- Clear errors for videos without an audio track and for FFmpeg failures
 
 ## Why
 
@@ -72,6 +77,8 @@ page. The release APK includes the separation model.
 
 - Clean Video quality depends on the mix. Music with vocals, heavy compression,
   or loud sound effects can bleed between stems.
+- Near-silent clean mixes are kept at their existing level instead of being
+  amplified into separation noise; the result screen explains why.
 - A 20-minute video takes roughly 29 minutes on the tested phone. Processing
   continues in the background with a notification.
 - The release APK is currently signed with the debug key (personal build). Future
@@ -146,9 +153,15 @@ Or copy the APK to a device and open it.
 ### Clean Video
 
 1. On the library screen, tap **Clean Video**.
-2. Choose a video.
+2. Choose a video. Videos without an audio track are rejected with a clear message.
 3. Tap **Clean video** and keep the app open.
 4. Play the cleaned result, then share the MP3, M4A or cleaned video.
+5. Tap **Delete stems** to remove the four outputs from the app. Files you saved
+   to another folder are kept. Cancelling a run also removes its partial stems.
+
+The result screen shows the levels you will get when saving: voice, sound
+effects and music are restored by +6 dB on export, while the clean mix is
+already normalized.
 
 ## Project structure
 

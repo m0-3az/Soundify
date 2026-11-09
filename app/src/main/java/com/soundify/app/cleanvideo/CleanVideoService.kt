@@ -47,7 +47,14 @@ class CleanVideoService : Service() {
                 val uri = intent.getParcelableExtra(EXTRA_URI) as? Uri
                 val name = intent.getStringExtra(EXTRA_NAME)
                 if (uri == null) {
-                    stopSelf()
+                    // A startForegroundService() call must reach startForeground()
+                    // before stopSelf(), even when the intent is malformed.
+                    startForeground(
+                        NOTIFICATION_ID,
+                        buildNotification(CleanVideoController.state.value, "Cancelled"),
+                    )
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
                     return START_NOT_STICKY
                 }
                 val state = CleanVideoController.state.value
@@ -55,7 +62,10 @@ class CleanVideoService : Service() {
                 startJob(uri, name)
             }
 
-            ACTION_CANCEL -> job?.cancel()
+            ACTION_CANCEL -> {
+                CleanVideoController.markCancelling()
+                job?.cancel()
+            }
         }
         return START_NOT_STICKY
     }
@@ -83,7 +93,10 @@ class CleanVideoService : Service() {
                 notifyFinished("Clean video is ready", "Open Soundify to review the four stems.")
             } catch (c: CancellationException) {
                 CleanVideoController.cancelled()
-                notifyFinished("Clean video cancelled", "No files were added.")
+                notifyFinished(
+                    "Clean video cancelled",
+                    "Partial stems were removed. Your saved files were kept.",
+                )
                 throw c
             } catch (t: Throwable) {
                 CleanVideoController.fail(t.message ?: "Clean Video failed")
@@ -134,7 +147,10 @@ class CleanVideoService : Service() {
         PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(MainActivity.EXTRA_OPEN_CLEAN_VIDEO, true)
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
@@ -145,6 +161,14 @@ class CleanVideoService : Service() {
             Intent(this, CleanVideoService::class.java).setAction(ACTION_CANCEL),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+    override fun onTimeout(startId: Int) {
+        // Android 15 limits dataSync foreground services. Stop cleanly so the
+        // worker can remove partial stems instead of being killed mid-write.
+        CleanVideoController.markCancelling()
+        job?.cancel()
+        stopSelf(startId)
+    }
 
     override fun onDestroy() {
         scope.cancel()

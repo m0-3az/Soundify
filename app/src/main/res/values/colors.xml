@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="soundify_background">#FFFBFE</color>
+    <color name="soundify_background_light">#FFFBFE</color>
+    <color name="soundify_background_dark">#101014</color>
     <color name="ic_launcher_background">#121212</color>
 </resources>

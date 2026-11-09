@@ -1,7 +1,9 @@
 package com.soundify.app.cleanvideo
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LoudnessTest {
@@ -37,5 +39,53 @@ class LoudnessTest {
     fun returnsNullWhenMeasurementIsIncomplete() {
         assertNull(Loudness.parseLoudnormJson("""{"input_i" : "-15.23"}"""))
         assertNull(Loudness.parseLoudnormJson("not json"))
+    }
+
+    @Test
+    fun parsesMinusInfinityForSilence() {
+        val log = """
+            {
+                "input_i" : "-inf",
+                "input_tp" : "-inf",
+                "input_lra" : "0.00",
+                "input_thresh" : "-inf",
+                "target_offset" : "0.00"
+            }
+        """.trimIndent()
+
+        val stats = Loudness.parseLoudnormJson(log)!!
+
+        assertEquals(Double.NEGATIVE_INFINITY, stats.inputI, 0.0)
+        assertEquals(Double.NEGATIVE_INFINITY, stats.inputTp, 0.0)
+        assertTrue(Loudness.isNearSilent(stats))
+    }
+
+    @Test
+    fun nearSilentThresholdCatchesQuietMixesOnly() {
+        val normal = LoudnessStats(
+            inputI = -23.0,
+            inputTp = -8.0,
+            inputLra = 2.0,
+            inputThresh = -33.0,
+            targetOffset = 0.5,
+        )
+        val quiet = normal.copy(inputI = -51.0, inputTp = -40.0)
+        val peakStarved = normal.copy(inputI = -30.0, inputTp = -50.5)
+
+        assertFalse(Loudness.isNearSilent(normal))
+        assertTrue(Loudness.isNearSilent(quiet))
+        assertTrue(Loudness.isNearSilent(peakStarved))
+    }
+
+    @Test
+    fun measuredTargetBoundaryIsNotTreatedAsSilence() {
+        val atThreshold = LoudnessStats(
+            inputI = -50.0,
+            inputTp = -50.0,
+            inputLra = 0.0,
+            inputThresh = -60.0,
+            targetOffset = 0.0,
+        )
+        assertTrue(Loudness.isNearSilent(atThreshold))
     }
 }

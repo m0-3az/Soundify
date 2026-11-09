@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="soundify_background">#101014</color>
+    <color name="soundify_background_light">#FFFBFE</color>
+    <color name="soundify_background_dark">#101014</color>
 </resources>

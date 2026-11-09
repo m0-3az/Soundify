@@ -36,13 +36,23 @@ enum class CleanStem(val label: String) {
     CLEAN("Clean mix"),
 }
 
+/** Non-clean stems are stored this far below the model output; restored on save. */
+internal const val STEM_RESTORE_DB = 6f
+
 data class StemResult(
     val kind: CleanStem,
     val file: File,
     val durationMs: Long,
     val rmsDb: Float,
     val peakDb: Float,
-)
+) {
+    /** Non-clean stems are stored 6 dB low; show the level they have on save. */
+    val exportGainDb: Float
+        get() = if (kind == CleanStem.CLEAN) 0f else STEM_RESTORE_DB
+
+    val displayRmsDb: Float get() = rmsDb + exportGainDb
+    val displayPeakDb: Float get() = peakDb + exportGainDb
+}
 
 data class CleanVideoResult(
     val voice: StemResult,
@@ -53,6 +63,8 @@ data class CleanVideoResult(
     val sourceName: String?,
     val videoCodec: String?,
     val videoDurationMs: Long,
+    /** Set when loudness matching was skipped, e.g. a near-silent clean mix. */
+    val cleanNote: String? = null,
 ) {
     fun stem(kind: CleanStem): StemResult = when (kind) {
         CleanStem.VOICE -> voice
@@ -73,8 +85,8 @@ data class CleanVideoResult(
  *
  * The model runs at the source level. Stems are written with 6 dB of headroom
  * because the masks can reconstruct peaks above the input; the clean mix is
- * then matched to [TARGET_LUFS] / [TARGET_TP] so it is neither quiet nor
- * clipping. Encoded MP3/M4A and the muxed video are created on Save, not here.
+ * then matched to -16 LUFS / -1.5 dBTP so it is neither quiet nor clipping.
+ * Encoded MP3/M4A and the muxed video are created on Save, not here.
  *
  * Only one chunk plus a 1 s overlap tail is held in RAM.
  */
@@ -89,140 +101,154 @@ class StreamingCleaner(private val context: Context) {
             deleteRecursively()
             mkdirs()
         }
-        val outDir = File(context.filesDir, "exports/cleanvideo/${System.currentTimeMillis()}").apply {
-            mkdirs()
-        }
-
-        val inputExt = displayName
-            ?.substringAfterLast('.', "")
-            ?.lowercase()
-            ?.takeIf { it.matches(Regex("[a-z0-9]{1,5}")) }
-            ?: "mp4"
-        val input = File(work, "input.$inputExt")
-        context.contentResolver.openInputStream(uri)?.use { stream ->
-            input.outputStream().use { stream.copyTo(it) }
-        } ?: error("Could not open the selected video")
-
-        val (videoCodec, probedDurationMs) = probeVideo(input)
-
-        onProgress(CleanProgress(0.01f, CleanStage.PREPARING, "Copying the video…"))
-        val audio = File(work, "audio.wav")
-        Ffmpeg.run(
-            "-y -i ${Ffmpeg.quote(input)} -vn -ac 2 -ar 44100 -c:a pcm_f32le ${Ffmpeg.quote(audio)}"
-        )
-
-        onProgress(CleanProgress(0.02f, CleanStage.PREPARING, "Extracting audio…"))
-        val modelFile = File(context.filesDir, "mrx_mask.onnx")
-        if (!modelFile.exists() || modelFile.length() <= 100_000_000L) {
-            onProgress(
-                CleanProgress(0.03f, CleanStage.PREPARING, "Copying the on-device model (first run)…")
-            )
-        }
-        val model = ensureModel()
-        currentCoroutineContext().ensureActive()
-
-        val cleanRaw = File(work, "clean_raw.wav")
-        val voiceWav = File(outDir, "voice.wav")
-        val sfxWav = File(outDir, "sfx.wav")
-        val musicWav = File(outDir, "music.wav")
-        val cleanWav = File(outDir, "clean.wav")
-        val reader = WavStreamReader(audio)
-        val durationMs = reader.totalFrames * 1000L / 44100L
-        val totalFrames = reader.totalFrames
-        val chunkCount = ((totalFrames + HOP - 1) / HOP).toInt().coerceAtLeast(1)
-        val separationStarted = SystemClock.elapsedRealtime()
-        val voiceWriter = WavStreamWriter(voiceWav, 2, 44100, gain = STEM_HEADROOM)
-        val sfxWriter = WavStreamWriter(sfxWav, 2, 44100, gain = STEM_HEADROOM)
-        val musicWriter = WavStreamWriter(musicWav, 2, 44100, gain = STEM_HEADROOM)
-        val cleanWriter = WavStreamWriter(cleanRaw, 2, 44100, gain = STEM_HEADROOM)
-        val voiceMerger = StreamMerger(OVERLAP)
-        val sfxMerger = StreamMerger(OVERLAP)
-        val musicMerger = StreamMerger(OVERLAP)
-        val cleanMerger = StreamMerger(OVERLAP)
-
-        val workerTid = android.os.Process.myTid()
-        val previousPriority = android.os.Process.getThreadPriority(workerTid)
-        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+        val outDir = CleanVideoStorage.newExportDir(context)
+        var completed = false
         try {
-            ChunkSeparator(model.absolutePath).use { separator ->
-                var start = 0L
-                while (start < reader.totalFrames) {
-                    currentCoroutineContext().ensureActive()
-                    val count = min(CHUNK.toLong(), reader.totalFrames - start).toInt()
-                    val segment = reader.read(start, count)
-                    val stereo = if (segment.size == 1) arrayOf(segment[0], segment[0].copyOf()) else segment
-                    val stems = separator.separate(stereo)
-                    val music = stems[0]
-                    val voice = stems[1]
-                    val sfx = stems[2]
-                    val clean = Array(2) { ch ->
-                        FloatArray(count) { i -> voice[ch][i] + sfx[ch][i] }
-                    }
-                    val first = start == 0L
-                    val last = start + count >= reader.totalFrames
-                    voiceMerger.accept(voiceWriter, voice, first, last)
-                    sfxMerger.accept(sfxWriter, sfx, first, last)
-                    musicMerger.accept(musicWriter, music, first, last)
-                    cleanMerger.accept(cleanWriter, clean, first, last)
+            val inputExt = displayName
+                ?.substringAfterLast('.', "")
+                ?.lowercase()
+                ?.takeIf { it.matches(Regex("[a-z0-9]{1,5}")) }
+                ?: "mp4"
+            val input = File(work, "input.$inputExt")
+            onProgress(CleanProgress(0.01f, CleanStage.PREPARING, "Copying the video…"))
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                input.outputStream().use { stream.copyTo(it) }
+            } ?: error("Could not open the selected video")
 
-                    val processed = min(start + count, totalFrames)
-                    val chunkIndex = (start / HOP).toInt() + 1
-                    start += HOP
-                    val fraction = if (totalFrames > 0) processed.toFloat() / totalFrames else 1f
-                    val elapsedMs = SystemClock.elapsedRealtime() - separationStarted
-                    val eta = if (fraction > 0.01f && elapsedMs > 0L) {
-                        (elapsedMs * (1.0 - fraction) / fraction / 1000.0).toLong()
-                            .coerceAtLeast(1L)
-                    } else {
-                        null
-                    }
-                    onProgress(
-                        CleanProgress(
-                            fraction = 0.05f + 0.85f * fraction,
-                            stage = CleanStage.SEPARATING,
-                            detail = "Chunk $chunkIndex of $chunkCount · " +
-                                "${formatClock(processed / 44100)} / " +
-                                "${formatClock(totalFrames / 44100)}",
-                            chunkIndex = chunkIndex,
-                            chunkCount = chunkCount,
-                            etaSeconds = eta,
-                        )
-                    )
-                }
+            val probe = probeVideo(input)
+            if (!probe.hasAudio) {
+                throw IllegalStateException("This video has no audio track.")
             }
+
+            val audio = File(work, "audio.wav")
+            onProgress(CleanProgress(0.02f, CleanStage.PREPARING, "Extracting audio…"))
+            Ffmpeg.run(
+                "-y -i ${Ffmpeg.quote(input)} -vn -ac 2 -ar 44100 -c:a pcm_f32le ${Ffmpeg.quote(audio)}"
+            )
+
+            val modelFile = File(context.filesDir, "mrx_mask.onnx")
+            if (!modelFile.exists() || modelFile.length() <= 100_000_000L) {
+                onProgress(
+                    CleanProgress(0.03f, CleanStage.PREPARING, "Copying the on-device model (first run)…")
+                )
+            }
+            val model = ensureModel()
+            currentCoroutineContext().ensureActive()
+
+            val cleanRaw = File(work, "clean_raw.wav")
+            val voiceWav = File(outDir, "voice.wav")
+            val sfxWav = File(outDir, "sfx.wav")
+            val musicWav = File(outDir, "music.wav")
+            val cleanWav = File(outDir, "clean.wav")
+            val reader = WavStreamReader(audio)
+            val durationMs = reader.totalFrames * 1000L / 44100L
+            val totalFrames = reader.totalFrames
+            val chunkCount = ((totalFrames + HOP - 1) / HOP).toInt().coerceAtLeast(1)
+            val separationStarted = SystemClock.elapsedRealtime()
+            val voiceWriter = WavStreamWriter(voiceWav, 2, 44100, gain = STEM_HEADROOM)
+            val sfxWriter = WavStreamWriter(sfxWav, 2, 44100, gain = STEM_HEADROOM)
+            val musicWriter = WavStreamWriter(musicWav, 2, 44100, gain = STEM_HEADROOM)
+            val cleanWriter = WavStreamWriter(cleanRaw, 2, 44100, gain = STEM_HEADROOM)
+            val voiceMerger = StreamMerger(OVERLAP)
+            val sfxMerger = StreamMerger(OVERLAP)
+            val musicMerger = StreamMerger(OVERLAP)
+            val cleanMerger = StreamMerger(OVERLAP)
+
+            val workerTid = android.os.Process.myTid()
+            val previousPriority = android.os.Process.getThreadPriority(workerTid)
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            try {
+                ChunkSeparator(model.absolutePath).use { separator ->
+                    var start = 0L
+                    while (start < reader.totalFrames) {
+                        currentCoroutineContext().ensureActive()
+                        val count = min(CHUNK.toLong(), reader.totalFrames - start).toInt()
+                        val segment = reader.read(start, count)
+                        val stereo = if (segment.size == 1) arrayOf(segment[0], segment[0].copyOf()) else segment
+                        val stems = separator.separate(stereo)
+                        val music = stems[0]
+                        val voice = stems[1]
+                        val sfx = stems[2]
+                        val clean = Array(2) { ch ->
+                            FloatArray(count) { i -> voice[ch][i] + sfx[ch][i] }
+                        }
+                        val first = start == 0L
+                        val last = start + count >= reader.totalFrames
+                        voiceMerger.accept(voiceWriter, voice, first, last)
+                        sfxMerger.accept(sfxWriter, sfx, first, last)
+                        musicMerger.accept(musicWriter, music, first, last)
+                        cleanMerger.accept(cleanWriter, clean, first, last)
+
+                        val processed = min(start + count, totalFrames)
+                        val chunkIndex = (start / HOP).toInt() + 1
+                        start += HOP
+                        val fraction = if (totalFrames > 0) processed.toFloat() / totalFrames else 1f
+                        val elapsedMs = SystemClock.elapsedRealtime() - separationStarted
+                        val eta = if (fraction > 0.01f && elapsedMs > 0L) {
+                            (elapsedMs * (1.0 - fraction) / fraction / 1000.0).toLong()
+                                .coerceAtLeast(1L)
+                        } else {
+                            null
+                        }
+                        onProgress(
+                            CleanProgress(
+                                fraction = 0.05f + 0.85f * fraction,
+                                stage = CleanStage.SEPARATING,
+                                detail = "Chunk $chunkIndex of $chunkCount · " +
+                                    "${formatClock(processed / 44100)} / " +
+                                    "${formatClock(totalFrames / 44100)}",
+                                chunkIndex = chunkIndex,
+                                chunkCount = chunkCount,
+                                etaSeconds = eta,
+                            )
+                        )
+                    }
+                }
+            } finally {
+                android.os.Process.setThreadPriority(previousPriority)
+                voiceWriter.close()
+                sfxWriter.close()
+                musicWriter.close()
+                cleanWriter.close()
+                reader.close()
+            }
+
+            currentCoroutineContext().ensureActive()
+            onProgress(CleanProgress(0.92f, CleanStage.FINALIZING, "Matching loudness…"))
+            val normalization = CleanMixNormalizer().normalize(cleanRaw, cleanWav)
+            if (!normalization.applied) {
+                onProgress(CleanProgress(0.94f, CleanStage.FINALIZING, normalization.detail))
+            }
+
+            currentCoroutineContext().ensureActive()
+            onProgress(CleanProgress(0.96f, CleanStage.FINALIZING, "Measuring the four stems…"))
+            val voiceStats = voiceWriter.stats()
+            val sfxStats = sfxWriter.stats()
+            val musicStats = musicWriter.stats()
+            val cleanStats = Wav.analyze(cleanWav)
+            val result = CleanVideoResult(
+                voice = StemResult(CleanStem.VOICE, voiceWav, durationMs, voiceStats.rmsDb, voiceStats.peakDb),
+                sfx = StemResult(CleanStem.SFX, sfxWav, durationMs, sfxStats.rmsDb, sfxStats.peakDb),
+                music = StemResult(CleanStem.MUSIC, musicWav, durationMs, musicStats.rmsDb, musicStats.peakDb),
+                clean = StemResult(CleanStem.CLEAN, cleanWav, durationMs, cleanStats.rmsDb, cleanStats.peakDb),
+                sourceUri = uri,
+                sourceName = displayName,
+                videoCodec = probe.videoCodec,
+                videoDurationMs = probe.durationMs.takeIf { it > 0L } ?: durationMs,
+                cleanNote = normalization.detail.takeIf { !normalization.applied },
+            )
+
+            onProgress(CleanProgress(1f, CleanStage.DONE, "Done"))
+            completed = true
+            result
         } finally {
-            android.os.Process.setThreadPriority(previousPriority)
-            voiceWriter.close()
-            sfxWriter.close()
-            musicWriter.close()
-            cleanWriter.close()
-            reader.close()
+            // A cancelled or failed run must not leave partial stems behind.
+            // Saved documents (SAF targets) and the source video are untouched.
+            if (!completed) {
+                CleanVideoStorage.deleteExportDir(CleanVideoStorage.exportRoot(context), outDir)
+            }
+            work.deleteRecursively()
         }
-
-        currentCoroutineContext().ensureActive()
-        onProgress(CleanProgress(0.92f, CleanStage.FINALIZING, "Matching loudness…"))
-        normalizeLoudness(cleanRaw, cleanWav)
-
-        currentCoroutineContext().ensureActive()
-        onProgress(CleanProgress(0.96f, CleanStage.FINALIZING, "Measuring the four stems…"))
-        val voiceStats = voiceWriter.stats()
-        val sfxStats = sfxWriter.stats()
-        val musicStats = musicWriter.stats()
-        val cleanStats = Wav.analyze(cleanWav)
-        val result = CleanVideoResult(
-            voice = StemResult(CleanStem.VOICE, voiceWav, durationMs, voiceStats.rmsDb, voiceStats.peakDb),
-            sfx = StemResult(CleanStem.SFX, sfxWav, durationMs, sfxStats.rmsDb, sfxStats.peakDb),
-            music = StemResult(CleanStem.MUSIC, musicWav, durationMs, musicStats.rmsDb, musicStats.peakDb),
-            clean = StemResult(CleanStem.CLEAN, cleanWav, durationMs, cleanStats.rmsDb, cleanStats.peakDb),
-            sourceUri = uri,
-            sourceName = displayName,
-            videoCodec = videoCodec,
-            videoDurationMs = probedDurationMs.takeIf { it > 0L } ?: durationMs,
-        )
-
-        work.deleteRecursively()
-        onProgress(CleanProgress(1f, CleanStage.DONE, "Done"))
-        result
     }
 
     private fun formatClock(seconds: Long): String {
@@ -230,13 +256,20 @@ class StreamingCleaner(private val context: Context) {
         return "%d:%02d".format(total / 60, total % 60)
     }
 
-    private fun probeVideo(file: File): Pair<String?, Long> {
+    private data class VideoProbe(
+        val videoCodec: String?,
+        val hasAudio: Boolean,
+        val durationMs: Long,
+    )
+
+    private fun probeVideo(file: File): VideoProbe {
         val info = runCatching {
             FFprobeKit.getMediaInformation(file.absolutePath).mediaInformation
-        }.getOrNull() ?: return null to 0L
+        }.getOrNull() ?: return VideoProbe(null, hasAudio = true, durationMs = 0L)
         val video = info.streams?.firstOrNull { it.type == "video" }
+        val hasAudio = info.streams?.any { it.type == "audio" } ?: true
         val durationMs = info.duration?.toDoubleOrNull()?.let { (it * 1000.0).toLong() } ?: 0L
-        return video?.codec to durationMs
+        return VideoProbe(video?.codec, hasAudio, durationMs)
     }
 
     private fun ensureModel(): File {
@@ -251,32 +284,6 @@ class StreamingCleaner(private val context: Context) {
             tmp.delete()
         }
         return model
-    }
-
-    /**
-     * Two-pass loudness match. The first pass measures the cleaned mix; the
-     * second applies a linear gain with a true-peak limit. If the measurement
-     * is unreadable (silence, truncated log), fall back to single-pass mode.
-     */
-    private fun normalizeLoudness(input: File, output: File) {
-        val measure = Ffmpeg.run(
-            "-y -i ${Ffmpeg.quote(input)} " +
-                "-af loudnorm=I=$TARGET_LUFS:TP=$TARGET_TP:LRA=11:print_format=json -f null -"
-        )
-        val stats = Loudness.parseLoudnormJson(measure)
-        val filter = if (stats == null) {
-            "loudnorm=I=$TARGET_LUFS:TP=$TARGET_TP:LRA=11"
-        } else {
-            "loudnorm=I=$TARGET_LUFS:TP=$TARGET_TP:LRA=11" +
-                ":measured_I=${stats.inputI}" +
-                ":measured_TP=${stats.inputTp}" +
-                ":measured_LRA=${stats.inputLra}" +
-                ":measured_thresh=${stats.inputThresh}" +
-                ":offset=${stats.targetOffset}:linear=true"
-        }
-        Ffmpeg.run(
-            "-y -i ${Ffmpeg.quote(input)} -af \"$filter\" -ar 44100 -c:a pcm_s16le ${Ffmpeg.quote(output)}"
-        )
     }
 
     private class StreamMerger(private val overlap: Int) {
@@ -331,8 +338,5 @@ class StreamingCleaner(private val context: Context) {
 
         /** Intermediate stems use 6 dB of headroom before the 16-bit conversion. */
         private const val STEM_HEADROOM = 0.5f
-
-        private const val TARGET_LUFS = -16.0
-        private const val TARGET_TP = -1.5
     }
 }

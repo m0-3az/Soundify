@@ -2,9 +2,12 @@ package com.soundify.app.cleanvideo
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+
+private const val TAG = "CleanVideoExporter"
 
 enum class AudioFormat(
     val label: String,
@@ -37,16 +40,19 @@ object VideoCompatibility {
         VideoFormat.WEBM -> codec in webmCodecs
     }
 
-    fun default(codec: String?): VideoFormat = when (codec) {
-        null -> VideoFormat.MKV
-        in setOf("vp8", "vp9") -> VideoFormat.MKV
-        else -> VideoFormat.MP4
-    }
+    /**
+     * MP4 only when the source codec is actually legal in it. Everything else
+     * (including unknown codecs) goes to Matroska, which can hold any stream.
+     */
+    fun default(codec: String?): VideoFormat =
+        if (codec != null && supports(VideoFormat.MP4, codec)) VideoFormat.MP4 else VideoFormat.MKV
 
-    /** Compatible formats with the best default first. */
+    /** Compatible formats with the best default first; unsupported ones are omitted. */
     fun ordered(codec: String?): List<VideoFormat> {
         val first = default(codec)
-        return listOf(first) + VideoFormat.entries.filter { it != first && supports(it, codec) }
+        return listOf(first) + VideoFormat.entries.filter {
+            it != first && supports(it, codec)
+        }
     }
 }
 
@@ -92,15 +98,51 @@ class CleanVideoExporter(private val context: Context) {
         require(VideoCompatibility.supports(format, result.videoCodec)) {
             "${format.label} cannot hold ${result.videoCodec ?: "this"} video"
         }
-        val source = File.createTempFile("soundify-source-", ".${sourceExtension(result.sourceName)}", context.cacheDir)
         val output = File.createTempFile("soundify-video-", ".${format.extension}", context.cacheDir)
+        try {
+            encodeVideoFromSource(result, stem, format, output)
+            copyToUri(output, target)
+        } finally {
+            output.delete()
+        }
+    }
+
+    /**
+     * Feed FFmpeg the open source descriptor instead of copying the whole
+     * video into the cache a second time. Some document providers hand out a
+     * stream that FFmpeg cannot seek, so fall back to one cached copy if the
+     * descriptor path fails.
+     */
+    private fun encodeVideoFromSource(
+        result: CleanVideoResult,
+        stem: StemResult,
+        format: VideoFormat,
+        output: File,
+    ) {
+        val viaDescriptor = runCatching {
+            context.contentResolver.openFileDescriptor(result.sourceUri, "r")?.use { descriptor ->
+                val source = File("/proc/self/fd/${descriptor.fd}")
+                check(source.exists()) { "The source file descriptor is not readable" }
+                encodeVideo(source, stem, format, output)
+            } ?: error("Could not reopen the source video")
+        }
+        if (viaDescriptor.isSuccess) return
+
+        android.util.Log.w(
+            TAG,
+            "Muxing from the source descriptor failed; using one cached copy",
+            viaDescriptor.exceptionOrNull(),
+        )
+        val source = File.createTempFile(
+            "soundify-source-",
+            ".${sourceExtension(result.sourceName)}",
+            context.cacheDir,
+        )
         try {
             copyUriToFile(result.sourceUri, source)
             encodeVideo(source, stem, format, output)
-            copyToUri(output, target)
         } finally {
             source.delete()
-            output.delete()
         }
     }
 
@@ -122,12 +164,17 @@ class CleanVideoExporter(private val context: Context) {
         if (stem.kind == CleanStem.CLEAN) {
             ""
         } else {
-            "-af \"volume=6dB,alimiter=limit=0.891:level=false\" "
+            "-af \"volume=${STEM_RESTORE_DB.toInt()}dB,alimiter=limit=0.891:level=false\" "
         }
 
     private fun copyToUri(file: File, target: Uri) {
-        val output = context.contentResolver.openOutputStream(target)
-            ?: error("Could not open the save location")
+        // "wt" truncates an existing document on API 30+ so saving over a
+        // larger previous file cannot leave stale bytes at the end.
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) "wt" else "w"
+        val output = runCatching {
+            context.contentResolver.openOutputStream(target, mode)
+        }.getOrNull() ?: context.contentResolver.openOutputStream(target)
+        ?: error("Could not open the save location")
         output.use { sink ->
             file.inputStream().use { it.copyTo(sink) }
         }

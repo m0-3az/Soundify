@@ -83,6 +83,12 @@ private fun palette(accent: ThemeAccent): AccentPalette = when (accent) {
     )
 }
 
+/** Non-composable so the launch theme and tests can use the same decision. */
+fun isDarkMode(mode: ThemeMode, systemDark: Boolean): Boolean =
+    mode == ThemeMode.DARK ||
+        mode == ThemeMode.AMOLED ||
+        (mode == ThemeMode.SYSTEM && systemDark)
+
 /** Non-composable so the palette can be unit tested. */
 fun soundifyColorScheme(
     mode: ThemeMode,
@@ -90,9 +96,7 @@ fun soundifyColorScheme(
     systemDark: Boolean,
 ): ColorScheme {
     val palette = palette(accent)
-    val dark = mode == ThemeMode.DARK ||
-        mode == ThemeMode.AMOLED ||
-        (mode == ThemeMode.SYSTEM && systemDark)
+    val dark = isDarkMode(mode, systemDark)
     return if (dark) {
         darkScheme(palette, amoled = mode == ThemeMode.AMOLED)
     } else {
