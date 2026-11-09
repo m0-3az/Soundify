@@ -13,7 +13,9 @@ import java.util.concurrent.Executors
 class ChunkSeparator(modelPath: String) : Closeable {
     private val onnx = OnnxSeparator(modelPath)
     private val ffts = intArrayOf(1024, 2048, 8192)
-    private val workers: ExecutorService = Executors.newFixedThreadPool(3)
+    private val workers: ExecutorService = Executors.newFixedThreadPool(3) { runnable ->
+        Thread(runnable, "soundify-istft").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
 
     /** input: [2][samples]. Returns [3 sources][2 channels][samples]. */
     fun separate(input: Array<FloatArray>): Array<Array<FloatArray>> {

@@ -55,10 +55,11 @@ page. The release APK includes the separation model.
 - Separate music / voice / sound effects with the bundled MRX model
 - Match the cleaned mix to -16 LUFS / -1.5 dBTP after separation
 - Stream 6-second chunks to disk so 20-minute videos do not exhaust RAM
-- Export cleaned audio as MP3 or M4A
-- Mux cleaned audio back into the video, copying the original video stream
-- MP4, MKV and WebM output; AAC for MP4/MKV, Opus for WebM
-- Share the cleaned audio or video with any app
+- Four outputs: voice, sound effects, music and clean mix, each with playback and a level control
+- Foreground service with a progress notification, chunk count, ETA and Cancel
+- Save one track as WAV, FLAC, MP3 or M4A through the system document picker
+- Put a track back into the video, copying the original video stream
+- MP4 is preferred for H.264/HEVC/AV1, MKV for VP9/unknown, WebM only for VP8/VP9/AV1
 
 ## Why
 
@@ -71,8 +72,8 @@ page. The release APK includes the separation model.
 
 - Clean Video quality depends on the mix. Music with vocals, heavy compression,
   or loud sound effects can bleed between stems.
-- A 20-minute video takes roughly 29 minutes on the tested phone. Keep the app
-  open while it processes.
+- A 20-minute video takes roughly 29 minutes on the tested phone. Processing
+  continues in the background with a notification.
 - The release APK is currently signed with the debug key (personal build). Future
   releases must keep the same signing key to update in place.
 - Stem Mixer requires all stems in a project to share the same sample rate.

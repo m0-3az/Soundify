@@ -44,7 +44,7 @@ class CleanVideoPipelineTest {
         val before = exports.listFiles()?.map { it.name }?.toSet() ?: emptySet()
 
         val job = launch(Dispatchers.Default) {
-            StreamingCleaner(context).clean(Uri.fromFile(video), "clip5.mp4") { _, _ -> }
+            StreamingCleaner(context).clean(Uri.fromFile(video), "clip5.mp4") { _ -> }
         }
         delay(750)
         job.cancelAndJoin()
@@ -69,7 +69,7 @@ class CleanVideoPipelineTest {
 
         val started = System.currentTimeMillis()
         val result = runBlocking {
-            StreamingCleaner(context).clean(Uri.fromFile(video), asset) { _, _ -> }
+            StreamingCleaner(context).clean(Uri.fromFile(video), asset) { _ -> }
         }
         val elapsed = System.currentTimeMillis() - started
 

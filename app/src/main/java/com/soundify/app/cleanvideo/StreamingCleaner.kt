@@ -2,6 +2,7 @@ package com.soundify.app.cleanvideo
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import com.arthenica.ffmpegkit.FFprobeKit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -11,6 +12,22 @@ import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.min
+
+enum class CleanStage {
+    PREPARING,
+    SEPARATING,
+    FINALIZING,
+    DONE,
+}
+
+data class CleanProgress(
+    val fraction: Float,
+    val stage: CleanStage,
+    val detail: String,
+    val chunkIndex: Int = 0,
+    val chunkCount: Int = 0,
+    val etaSeconds: Long? = null,
+)
 
 enum class CleanStem(val label: String) {
     VOICE("Voice"),
@@ -66,7 +83,7 @@ class StreamingCleaner(private val context: Context) {
     suspend fun clean(
         uri: Uri,
         displayName: String?,
-        onProgress: (Float, String) -> Unit,
+        onProgress: (CleanProgress) -> Unit,
     ): CleanVideoResult = withContext(Dispatchers.IO) {
         val work = File(context.cacheDir, "cleanvideo").apply {
             deleteRecursively()
@@ -88,14 +105,20 @@ class StreamingCleaner(private val context: Context) {
 
         val (videoCodec, probedDurationMs) = probeVideo(input)
 
-        onProgress(0.02f, "Extracting audio…")
+        onProgress(CleanProgress(0.01f, CleanStage.PREPARING, "Copying the video…"))
         val audio = File(work, "audio.wav")
         Ffmpeg.run(
             "-y -i ${Ffmpeg.quote(input)} -vn -ac 2 -ar 44100 -c:a pcm_f32le ${Ffmpeg.quote(audio)}"
         )
 
-        onProgress(0.04f, "Preparing on-device model…")
-        val model = ensureModel(onProgress)
+        onProgress(CleanProgress(0.02f, CleanStage.PREPARING, "Extracting audio…"))
+        val modelFile = File(context.filesDir, "mrx_mask.onnx")
+        if (!modelFile.exists() || modelFile.length() <= 100_000_000L) {
+            onProgress(
+                CleanProgress(0.03f, CleanStage.PREPARING, "Copying the on-device model (first run)…")
+            )
+        }
+        val model = ensureModel()
         currentCoroutineContext().ensureActive()
 
         val cleanRaw = File(work, "clean_raw.wav")
@@ -105,6 +128,9 @@ class StreamingCleaner(private val context: Context) {
         val cleanWav = File(outDir, "clean.wav")
         val reader = WavStreamReader(audio)
         val durationMs = reader.totalFrames * 1000L / 44100L
+        val totalFrames = reader.totalFrames
+        val chunkCount = ((totalFrames + HOP - 1) / HOP).toInt().coerceAtLeast(1)
+        val separationStarted = SystemClock.elapsedRealtime()
         val voiceWriter = WavStreamWriter(voiceWav, 2, 44100, gain = STEM_HEADROOM)
         val sfxWriter = WavStreamWriter(sfxWav, 2, 44100, gain = STEM_HEADROOM)
         val musicWriter = WavStreamWriter(musicWav, 2, 44100, gain = STEM_HEADROOM)
@@ -114,6 +140,9 @@ class StreamingCleaner(private val context: Context) {
         val musicMerger = StreamMerger(OVERLAP)
         val cleanMerger = StreamMerger(OVERLAP)
 
+        val workerTid = android.os.Process.myTid()
+        val previousPriority = android.os.Process.getThreadPriority(workerTid)
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
         try {
             ChunkSeparator(model.absolutePath).use { separator ->
                 var start = 0L
@@ -136,16 +165,33 @@ class StreamingCleaner(private val context: Context) {
                     musicMerger.accept(musicWriter, music, first, last)
                     cleanMerger.accept(cleanWriter, clean, first, last)
 
+                    val processed = min(start + count, totalFrames)
+                    val chunkIndex = (start / HOP).toInt() + 1
                     start += HOP
-                    val done = min(start, reader.totalFrames)
-                    val fraction = if (reader.totalFrames > 0) done.toFloat() / reader.totalFrames else 1f
+                    val fraction = if (totalFrames > 0) processed.toFloat() / totalFrames else 1f
+                    val elapsedMs = SystemClock.elapsedRealtime() - separationStarted
+                    val eta = if (fraction > 0.01f && elapsedMs > 0L) {
+                        (elapsedMs * (1.0 - fraction) / fraction / 1000.0).toLong()
+                            .coerceAtLeast(1L)
+                    } else {
+                        null
+                    }
                     onProgress(
-                        0.05f + 0.85f * fraction,
-                        "Separating ${done / 44100}s / ${reader.totalFrames / 44100}s",
+                        CleanProgress(
+                            fraction = 0.05f + 0.85f * fraction,
+                            stage = CleanStage.SEPARATING,
+                            detail = "Chunk $chunkIndex of $chunkCount · " +
+                                "${formatClock(processed / 44100)} / " +
+                                "${formatClock(totalFrames / 44100)}",
+                            chunkIndex = chunkIndex,
+                            chunkCount = chunkCount,
+                            etaSeconds = eta,
+                        )
                     )
                 }
             }
         } finally {
+            android.os.Process.setThreadPriority(previousPriority)
             voiceWriter.close()
             sfxWriter.close()
             musicWriter.close()
@@ -154,11 +200,11 @@ class StreamingCleaner(private val context: Context) {
         }
 
         currentCoroutineContext().ensureActive()
-        onProgress(0.92f, "Matching loudness…")
+        onProgress(CleanProgress(0.92f, CleanStage.FINALIZING, "Matching loudness…"))
         normalizeLoudness(cleanRaw, cleanWav)
 
         currentCoroutineContext().ensureActive()
-        onProgress(0.96f, "Analyzing stems…")
+        onProgress(CleanProgress(0.96f, CleanStage.FINALIZING, "Measuring the four stems…"))
         val voiceStats = voiceWriter.stats()
         val sfxStats = sfxWriter.stats()
         val musicStats = musicWriter.stats()
@@ -175,8 +221,13 @@ class StreamingCleaner(private val context: Context) {
         )
 
         work.deleteRecursively()
-        onProgress(1f, "Done")
+        onProgress(CleanProgress(1f, CleanStage.DONE, "Done"))
         result
+    }
+
+    private fun formatClock(seconds: Long): String {
+        val total = seconds.coerceAtLeast(0)
+        return "%d:%02d".format(total / 60, total % 60)
     }
 
     private fun probeVideo(file: File): Pair<String?, Long> {
@@ -188,10 +239,9 @@ class StreamingCleaner(private val context: Context) {
         return video?.codec to durationMs
     }
 
-    private fun ensureModel(onProgress: (Float, String) -> Unit): File {
+    private fun ensureModel(): File {
         val model = File(context.filesDir, "mrx_mask.onnx")
         if (model.exists() && model.length() > 100_000_000L) return model
-        onProgress(0.03f, "Copying on-device model (first run)…")
         val tmp = File(context.filesDir, "mrx_mask.onnx.tmp")
         context.assets.open("mrx_mask.onnx").use { stream ->
             tmp.outputStream().use { stream.copyTo(it) }

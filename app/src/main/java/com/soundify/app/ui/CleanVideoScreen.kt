@@ -8,6 +8,9 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -22,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -46,6 +51,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -53,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,11 +74,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.soundify.app.CleanVideoViewModel
 import com.soundify.app.cleanvideo.AudioFormat
+import com.soundify.app.cleanvideo.CleanStage
 import com.soundify.app.cleanvideo.CleanStem
+import com.soundify.app.cleanvideo.CleanVideoController
 import com.soundify.app.cleanvideo.CleanVideoResult
 import com.soundify.app.cleanvideo.StemResult
 import com.soundify.app.cleanvideo.VideoCompatibility
 import com.soundify.app.cleanvideo.VideoFormat
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 private enum class SaveKind { AUDIO, VIDEO }
@@ -96,6 +106,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
     val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
     val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
     val saveMessage by viewModel.saveMessage.collectAsStateWithLifecycle()
+    val cleanState by viewModel.cleanState.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -192,7 +203,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
             }
 
             if (processing) {
-                ProcessingCard(progress = progress, status = status, onCancel = viewModel::cancel)
+                ProcessingCard(state = cleanState, onCancel = viewModel::cancel)
             }
 
             result?.let { output ->
@@ -245,23 +256,125 @@ fun CleanVideoScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun ProcessingCard(progress: Float, status: String?, onCancel: () -> Unit) {
+private fun ProcessingCard(state: CleanVideoController.State, onCancel: () -> Unit) {
+    val target = state.progress.coerceIn(0f, 1f)
+    val animated by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(durationMillis = 700, easing = LinearEasing),
+        label = "clean-progress",
+    )
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.isProcessing, state.startedAtMs) {
+        while (state.isProcessing) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    val elapsed = if (state.startedAtMs > 0L) {
+        ((now - state.startedAtMs) / 1000).coerceAtLeast(0)
+    } else {
+        0
+    }
+    val cancelling = state.detail == "Cancelling…"
+
     Card(Modifier.fillMaxWidth()) {
         Column(
             Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Processing on device", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Cleaning on device", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Elapsed ${formatClock(elapsed)} · ${(target * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            }
             LinearProgressIndicator(
-                progress = { progress.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
+                progress = { animated },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp),
             )
-            Text(status ?: "Working…", style = MaterialTheme.typography.bodyMedium)
-            val cancelling = status == "Cancelling…"
+            StageRow(CleanStage.PREPARING, "Prepare audio", state)
+            StageRow(CleanStage.SEPARATING, "Separate stems", state)
+            StageRow(CleanStage.FINALIZING, "Finish", state)
+            if (state.stage == CleanStage.SEPARATING && state.chunkCount > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    InfoChip("Chunk ${state.chunkIndex} / ${state.chunkCount}")
+                    state.etaSeconds?.let { InfoChip("~${formatClock(it)} left") }
+                }
+            }
+            state.detail?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             TextButton(onClick = onCancel, enabled = !cancelling) {
                 Text(if (cancelling) "Cancelling…" else "Cancel")
             }
         }
+    }
+}
+
+@Composable
+private fun StageRow(
+    stage: CleanStage,
+    label: String,
+    state: CleanVideoController.State,
+) {
+    val active = state.stage == stage && state.isProcessing
+    val done = state.stage == CleanStage.DONE || ((state.stage?.ordinal ?: -1) > stage.ordinal)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        when {
+            done -> Icon(
+                Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+
+            active -> CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+            )
+
+            else -> Icon(
+                Icons.Default.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.titleSmall,
+            color = if (active || done) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+@Composable
+private fun InfoChip(text: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(50),
+    ) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
 }
 
@@ -511,8 +624,10 @@ private fun stemIcon(kind: CleanStem) = when (kind) {
 private fun levelFraction(rmsDb: Float): Float =
     ((rmsDb + 60f) / 60f).coerceIn(0f, 1f)
 
-private fun formatDuration(ms: Long): String {
-    val total = (ms / 1000).coerceAtLeast(0)
+private fun formatDuration(ms: Long): String = formatClock(ms / 1000)
+
+private fun formatClock(seconds: Long): String {
+    val total = seconds.coerceAtLeast(0)
     return "%d:%02d".format(Locale.US, total / 60, total % 60)
 }
 
