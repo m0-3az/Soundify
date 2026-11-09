@@ -1,0 +1,15 @@
+*.apk
+*-decompiled/
+.gradle/
+build/
+.kotlin/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Reference material and copyrighted sample videos
+Spike/
+
+# 117 MB model: included in release APKs; see README for source builds
+app/src/main/assets/mrx_mask.onnx

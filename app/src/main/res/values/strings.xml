@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Soundify</string>
+    <string name="app_tagline">Bring your stems. Mix them anywhere.</string>
+
+    <string name="library_title">Library</string>
+    <string name="library_empty_title">No projects yet</string>
+    <string name="library_empty_body">Create a project and import the stems you already have.</string>
+    <string name="new_project">New project</string>
+    <string name="settings">Settings</string>
+
+    <string name="import_title">Import stems</string>
+    <string name="import_subtitle">Select 2–8 audio files. WAV, FLAC, MP3, M4A and AAC are supported at 44.1 or 48 kHz.</string>
+    <string name="import_action">Choose files</string>
+    <string name="import_working">Importing stems…</string>
+
+    <string name="player_title">Mixer</string>
+    <string name="export">Export</string>
+    <string name="export_wav">Export WAV</string>
+    <string name="export_m4a">Export M4A</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="loop">Loop</string>
+    <string name="master">Master</string>
+    <string name="gain">Gain</string>
+    <string name="pan">Pan</string>
+    <string name="mute">Mute</string>
+    <string name="solo">Solo</string>
+    <string name="offset">Offset</string>
+
+    <string name="settings_about">About Soundify</string>
+    <string name="settings_about_body">A free, offline, no-AI stem mixer. No accounts, no network, no tracking.</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_storage">Storage used</string>
+    <string name="settings_licenses">Open-source licenses</string>
+</resources>
