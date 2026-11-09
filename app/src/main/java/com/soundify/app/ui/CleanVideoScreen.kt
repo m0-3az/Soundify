@@ -1,5 +1,6 @@
 package com.soundify.app.ui
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
@@ -7,25 +8,42 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -35,18 +53,33 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.soundify.app.CleanVideoViewModel
+import com.soundify.app.cleanvideo.AudioFormat
+import com.soundify.app.cleanvideo.CleanStem
 import com.soundify.app.cleanvideo.CleanVideoResult
-import java.io.File
+import com.soundify.app.cleanvideo.StemResult
+import com.soundify.app.cleanvideo.VideoCompatibility
+import com.soundify.app.cleanvideo.VideoFormat
+import java.util.Locale
+
+private enum class SaveKind { AUDIO, VIDEO }
+
+private sealed interface PendingSave {
+    data class Audio(val format: AudioFormat) : PendingSave
+    data class Video(val format: VideoFormat) : PendingSave
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,9 +92,28 @@ fun CleanVideoScreen(onBack: () -> Unit) {
     val status by viewModel.status.collectAsStateWithLifecycle()
     val result by viewModel.result.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val selectedStem by viewModel.selectedStem.collectAsStateWithLifecycle()
+    val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
+    val saveStatus by viewModel.saveStatus.collectAsStateWithLifecycle()
+    val saveMessage by viewModel.saveMessage.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+    var pendingSave by remember { mutableStateOf<PendingSave?>(null) }
+    var saveSheetOpen by remember { mutableStateOf(false) }
+
+    val saver = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { activityResult ->
+        val target = activityResult.data?.data
+        val pending = pendingSave
+        pendingSave = null
+        if (activityResult.resultCode == Activity.RESULT_OK && target != null && pending != null) {
+            when (pending) {
+                is PendingSave.Audio -> viewModel.saveAudio(pending.format, target)
+                is PendingSave.Video -> viewModel.saveVideo(pending.format, target)
+            }
+        }
+    }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { selected ->
         if (selected != null) {
             runCatching {
@@ -74,11 +126,22 @@ fun CleanVideoScreen(onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(message) {
-        message?.let {
+    LaunchedEffect(message, saveMessage) {
+        (message ?: saveMessage)?.let {
             snackbar.showSnackbar(it)
             viewModel.clearMessage()
+            viewModel.clearSaveMessage()
         }
+    }
+
+    val launchSave = { pending: PendingSave, mime: String, fileName: String ->
+        pendingSave = pending
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mime
+            putExtra(Intent.EXTRA_TITLE, fileName)
+        }
+        saver.launch(intent)
     }
 
     Scaffold(
@@ -87,7 +150,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                 title = { Text("Clean Video") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
             )
@@ -109,7 +172,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
             )
             Button(
                 onClick = { picker.launch(arrayOf("video/*")) },
-                enabled = !processing,
+                enabled = !processing && !isSaving,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (uri == null) "Choose video" else "Choose another video")
@@ -129,56 +192,162 @@ fun CleanVideoScreen(onBack: () -> Unit) {
             }
 
             if (processing) {
-                LinearProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(status ?: "Working…", style = MaterialTheme.typography.bodyMedium)
-                val cancelling = status == "Cancelling…"
-                TextButton(onClick = viewModel::cancel, enabled = !cancelling) {
-                    Text(if (cancelling) "Cancelling…" else "Cancel")
-                }
+                ProcessingCard(progress = progress, status = status, onCancel = viewModel::cancel)
             }
 
-            result?.let { ResultSection(it) }
+            result?.let { output ->
+                ResultSection(
+                    result = output,
+                    selected = selectedStem,
+                    isSaving = isSaving,
+                    saveStatus = saveStatus,
+                    onSelect = viewModel::selectStem,
+                    onSave = { saveSheetOpen = true },
+                )
+            }
 
             Spacer(Modifier.height(8.dp))
             Text(
                 "A 20-minute video takes roughly 25–30 minutes on this phone. " +
-                    "Keep Soundify open while it processes.",
+                    "The stems take about 850 MB until you delete them.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
+
+    val output = result
+    if (saveSheetOpen && output != null) {
+        val base = baseName(output.sourceName)
+        val slug = stemSlug(selectedStem)
+        SaveSheet(
+            result = output,
+            selected = selectedStem,
+            onDismiss = { saveSheetOpen = false },
+            onAudio = { format ->
+                saveSheetOpen = false
+                launchSave(
+                    PendingSave.Audio(format),
+                    format.mime,
+                    "${base}_$slug.${format.extension}",
+                )
+            },
+            onVideo = { format ->
+                saveSheetOpen = false
+                launchSave(
+                    PendingSave.Video(format),
+                    format.mime,
+                    "${base}_$slug.${format.extension}",
+                )
+            },
+        )
+    }
 }
 
 @Composable
-private fun ResultSection(result: CleanVideoResult) {
-    val context = LocalContext.current
+private fun ProcessingCard(progress: Float, status: String?, onCancel: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(
             Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("Cleaned audio is ready", style = MaterialTheme.typography.titleMedium)
-            AudioPreview(result.cleanedWav)
-            Button(
-                onClick = { share(context, result.mp3, "audio/mpeg") },
+            Text("Processing on device", style = MaterialTheme.typography.titleMedium)
+            LinearProgressIndicator(
+                progress = { progress.coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Share MP3") }
-            Button(
-                onClick = { share(context, result.m4a, "audio/mp4") },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Share M4A") }
-            result.video?.let { video ->
-                Button(
-                    onClick = { share(context, video, "video/*") },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Share cleaned video") }
+            )
+            Text(status ?: "Working…", style = MaterialTheme.typography.bodyMedium)
+            val cancelling = status == "Cancelling…"
+            TextButton(onClick = onCancel, enabled = !cancelling) {
+                Text(if (cancelling) "Cancelling…" else "Cancel")
             }
+        }
+    }
+}
+
+@Composable
+private fun ResultSection(
+    result: CleanVideoResult,
+    selected: CleanStem,
+    isSaving: Boolean,
+    saveStatus: String?,
+    onSelect: (CleanStem) -> Unit,
+    onSave: () -> Unit,
+) {
+    val player = remember { MediaPlayer() }
+    var playing by remember { mutableStateOf<CleanStem?>(null) }
+    val volumes = remember { mutableStateMapOf<CleanStem, Float>() }
+
+    DisposableEffect(player) {
+        player.setOnCompletionListener { playing = null }
+        onDispose { player.release() }
+    }
+    LaunchedEffect(result) {
+        runCatching { player.reset() }
+        playing = null
+    }
+
+    fun toggle(stem: StemResult) {
+        if (playing == stem.kind && player.isPlaying) {
+            player.pause()
+            playing = null
+            return
+        }
+        runCatching {
+            player.reset()
+            player.setDataSource(stem.file.absolutePath)
+            player.prepare()
+            val volume = volumes[stem.kind] ?: 1f
+            player.setVolume(volume, volume)
+            player.start()
+            playing = stem.kind
+        }
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Four on-device outputs", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Select a track, then save it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Button(onClick = onSave, enabled = !isSaving) {
+                    Text(if (isSaving) "Saving…" else "Save")
+                }
+            }
+
+            saveStatus?.let {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            result.stems.forEach { stem ->
+                StemRow(
+                    stem = stem,
+                    selected = selected == stem.kind,
+                    playing = playing == stem.kind,
+                    volume = volumes[stem.kind] ?: 1f,
+                    onSelect = { onSelect(stem.kind) },
+                    onToggle = { toggle(stem) },
+                    onVolume = { value ->
+                        volumes[stem.kind] = value
+                        if (playing == stem.kind) player.setVolume(value, value)
+                    },
+                )
+            }
+
             Text(
-                "Files are in Soundify's exports folder.",
+                "Stems use ${megabytes(result.stems.sumOf { it.file.length() })} in Soundify's exports folder.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -187,49 +356,177 @@ private fun ResultSection(result: CleanVideoResult) {
 }
 
 @Composable
-private fun AudioPreview(file: File) {
-    var playing by remember(file) { mutableStateOf(false) }
-    val player = remember(file) { MediaPlayer() }
-    DisposableEffect(file) {
-        player.setOnCompletionListener { playing = false }
-        onDispose { player.release() }
-    }
-    Button(
-        onClick = {
-            if (playing) {
-                player.pause()
-                playing = false
+private fun StemRow(
+    stem: StemResult,
+    selected: Boolean,
+    playing: Boolean,
+    volume: Float,
+    onSelect: () -> Unit,
+    onToggle: () -> Unit,
+    onVolume: (Float) -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer
             } else {
-                if (!player.isPlaying) {
-                    player.reset()
-                    player.setDataSource(file.absolutePath)
-                    player.prepare()
-                    player.seekTo(0)
-                    player.start()
-                }
-                playing = true
-            }
-        },
-        modifier = Modifier.fillMaxWidth(),
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        ),
     ) {
-        Text(if (playing) "Pause cleaned audio" else "Play cleaned audio")
+        Column(
+            Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selected, onClick = onSelect)
+                Icon(stemIcon(stem.kind), contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(stem.kind.label, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "${formatDuration(stem.durationMs)} · RMS ${
+                            "%.1f".format(Locale.US, stem.rmsDb)
+                        } dBFS · peak ${"%.1f".format(Locale.US, stem.peakDb)} dBFS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onToggle) {
+                    Icon(
+                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (playing) "Pause" else "Play",
+                    )
+                }
+            }
+            LinearProgressIndicator(
+                progress = { levelFraction(stem.rmsDb) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Level", style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = volume,
+                    onValueChange = onVolume,
+                    valueRange = 0f..1f,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp),
+                )
+                Text("${(volume * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
+            }
+        }
     }
 }
 
-private fun share(context: Context, file: File, mime: String) {
-    runCatching {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
-        )
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = mime
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SaveSheet(
+    result: CleanVideoResult,
+    selected: CleanStem,
+    onDismiss: () -> Unit,
+    onAudio: (AudioFormat) -> Unit,
+    onVideo: (VideoFormat) -> Unit,
+) {
+    var kind by remember { mutableStateOf<SaveKind?>(null) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Save ${selected.label}", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Only the chosen format is encoded when you save.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            when (kind) {
+                null -> {
+                    ChoiceRow("Audio", "WAV, FLAC, MP3 or M4A") { kind = SaveKind.AUDIO }
+                    ChoiceRow("Video", "Put this audio back into the video") { kind = SaveKind.VIDEO }
+                }
+
+                SaveKind.AUDIO -> {
+                    TextButton(onClick = { kind = null }) { Text("Back") }
+                    AudioFormat.entries.forEach { format ->
+                        ChoiceRow(format.label, ".${format.extension}") { onAudio(format) }
+                    }
+                }
+
+                SaveKind.VIDEO -> {
+                    TextButton(onClick = { kind = null }) { Text("Back") }
+                    val recommended = VideoCompatibility.default(result.videoCodec)
+                    VideoCompatibility.ordered(result.videoCodec).forEach { format ->
+                        ChoiceRow(
+                            format.label,
+                            if (format == recommended) {
+                                ".${format.extension} · recommended for ${result.videoCodec ?: "this video"}"
+                            } else {
+                                ".${format.extension}"
+                            },
+                        ) { onVideo(format) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
         }
-        context.startActivity(Intent.createChooser(intent, "Share ${file.name}"))
     }
+}
+
+@Composable
+private fun ChoiceRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun stemIcon(kind: CleanStem) = when (kind) {
+    CleanStem.VOICE -> Icons.Default.Mic
+    CleanStem.SFX -> Icons.Default.GraphicEq
+    CleanStem.MUSIC -> Icons.Default.MusicNote
+    CleanStem.CLEAN -> Icons.Default.CheckCircle
+}
+
+private fun levelFraction(rmsDb: Float): Float =
+    ((rmsDb + 60f) / 60f).coerceIn(0f, 1f)
+
+private fun formatDuration(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(Locale.US, total / 60, total % 60)
+}
+
+private fun megabytes(bytes: Long): String =
+    "%.1f MB".format(Locale.US, bytes / 1_000_000.0)
+
+private fun baseName(name: String?): String =
+    name?.substringBeforeLast('.')?.takeIf { it.isNotBlank() } ?: "Soundify"
+
+private fun stemSlug(kind: CleanStem): String = when (kind) {
+    CleanStem.VOICE -> "voice"
+    CleanStem.SFX -> "sfx"
+    CleanStem.MUSIC -> "music"
+    CleanStem.CLEAN -> "clean"
 }
 
 private fun displayName(context: Context, uri: Uri): String? {

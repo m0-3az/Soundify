@@ -5,7 +5,9 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * Streaming reader for the 16-bit PCM WAV produced by FFmpeg. Only the header
@@ -113,6 +115,9 @@ class WavStreamWriter(
     private val raf = RandomAccessFile(file, "rw")
     private var dataBytes = 0L
     private var closed = false
+    private var sumSquares = 0.0
+    private var peak = 0f
+    private var sampleCount = 0L
 
     init {
         raf.setLength(0)
@@ -130,10 +135,20 @@ class WavStreamWriter(
             for (c in 0 until channels) {
                 val v = ((chunk[c][offset + i] * gain).coerceIn(-1f, 1f) * 32767f).toInt()
                 buffer.putShort(v.toShort())
+                val sample = v / 32767.0
+                sumSquares += sample * sample
+                val value = abs(v / 32767f)
+                if (value > peak) peak = value
+                sampleCount++
             }
         }
         raf.write(bytes)
         dataBytes += bytes.size
+    }
+
+    fun stats(): LevelStats {
+        val rms = if (sampleCount == 0L) 0.0 else sqrt(sumSquares / sampleCount)
+        return LevelStats(levelDb(rms), levelDb(peak.toDouble()))
     }
 
     override fun close() {

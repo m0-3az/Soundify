@@ -5,6 +5,18 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.min
+import kotlin.math.sqrt
+
+data class LevelStats(
+    val rmsDb: Float,
+    val peakDb: Float,
+)
+
+fun levelDb(value: Double): Float =
+    (20.0 * log10(value.coerceAtLeast(1e-6))).toFloat()
 
 data class WavData(
     val sampleRate: Int,
@@ -13,6 +25,30 @@ data class WavData(
 )
 
 object Wav {
+    /** Streams a WAV and returns its RMS and sample peak without loading it all. */
+    fun analyze(file: File): LevelStats = WavStreamReader(file).use { reader ->
+        var sumSquares = 0.0
+        var peak = 0f
+        var count = 0L
+        val chunkFrames = 1 shl 20
+        var start = 0L
+        while (start < reader.totalFrames) {
+            val countHere = min(chunkFrames.toLong(), reader.totalFrames - start).toInt()
+            val channels = reader.read(start, countHere)
+            for (channel in channels) {
+                for (sample in channel) {
+                    sumSquares += sample.toDouble() * sample
+                    val value = abs(sample)
+                    if (value > peak) peak = value
+                    count++
+                }
+            }
+            start += countHere
+        }
+        val rms = if (count == 0L) 0.0 else sqrt(sumSquares / count)
+        LevelStats(levelDb(rms), levelDb(peak.toDouble()))
+    }
+
     fun read(file: File): WavData {
         val bytes = file.readBytes()
         require(bytes.size >= 44) { "file too small" }

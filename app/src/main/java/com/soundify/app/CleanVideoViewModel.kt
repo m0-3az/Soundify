@@ -4,8 +4,12 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.soundify.app.cleanvideo.AudioFormat
+import com.soundify.app.cleanvideo.CleanStem
+import com.soundify.app.cleanvideo.CleanVideoExporter
 import com.soundify.app.cleanvideo.CleanVideoResult
 import com.soundify.app.cleanvideo.StreamingCleaner
+import com.soundify.app.cleanvideo.VideoFormat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +23,10 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
     val status = MutableStateFlow<String?>(null)
     val result = MutableStateFlow<CleanVideoResult?>(null)
     val message = MutableStateFlow<String?>(null)
+    val selectedStem = MutableStateFlow(CleanStem.CLEAN)
+    val isSaving = MutableStateFlow(false)
+    val saveStatus = MutableStateFlow<String?>(null)
+    val saveMessage = MutableStateFlow<String?>(null)
 
     private var job: Job? = null
 
@@ -26,6 +34,7 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
         selectedUri.value = uri
         selectedName.value = name
         result.value = null
+        selectedStem.value = CleanStem.CLEAN
         progress.value = 0f
         status.value = null
     }
@@ -72,5 +81,49 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearMessage() {
         message.value = null
+    }
+
+    fun selectStem(kind: CleanStem) {
+        if (!isSaving.value) selectedStem.value = kind
+    }
+
+    fun saveAudio(format: AudioFormat, target: Uri) {
+        val output = result.value ?: return
+        startSave("Saving ${format.label}…") {
+            CleanVideoExporter(getApplication())
+                .exportAudio(output.stem(selectedStem.value), format, target)
+            saveMessage.value = "Saved ${selectedStem.value.label} as ${format.label}"
+        }
+    }
+
+    fun saveVideo(format: VideoFormat, target: Uri) {
+        val output = result.value ?: return
+        startSave("Saving ${format.label} video…") {
+            CleanVideoExporter(getApplication())
+                .exportVideo(output, output.stem(selectedStem.value), format, target)
+            saveMessage.value = "Saved ${selectedStem.value.label} video as ${format.label}"
+        }
+    }
+
+    fun clearSaveMessage() {
+        saveMessage.value = null
+    }
+
+    private fun startSave(status: String, block: suspend () -> Unit) {
+        if (isSaving.value) return
+        isSaving.value = true
+        saveStatus.value = status
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                saveMessage.value = t.message ?: "Save failed"
+            } finally {
+                isSaving.value = false
+                saveStatus.value = null
+            }
+        }
     }
 }
