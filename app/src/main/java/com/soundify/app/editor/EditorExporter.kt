@@ -6,12 +6,17 @@ import android.os.Build
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.soundify.app.cleanvideo.Ffmpeg
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
@@ -23,6 +28,11 @@ import kotlin.math.roundToInt
  * tests can inspect the encoded file directly. Its inputs come from
  * [FilterPlan.inputClips], never from the raw selection: a clip dropped by
  * sanitization must not shift the `-i` ordering of the ones that remain.
+ *
+ * Cancellation is checked after encoding, before opening the target, and
+ * between copy chunks. A scope cancellation waits (bounded) for the FFmpeg
+ * session to finish before the temporary file is deleted, because a cancelled
+ * session can otherwise recreate the file after cleanup.
  */
 class EditorExporter(
     private val context: Context,
@@ -45,15 +55,18 @@ class EditorExporter(
         onCancelReady: (() -> Unit) -> Unit = {},
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val output = File(exportDir(), exportFileName(project, format))
+        val cancel = ExportCancelToken()
         try {
-            exportToFile(project, clips, format, output, onProgress, onCancelReady)
-            copyToUri(output, target)
+            exportToFile(project, clips, format, output, onProgress, onCancelReady, cancel)
+            cancel.check()
+            copyToUri(output, target, cancel)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             Result.failure(error)
         } finally {
+            cancel.finish()
             output.delete()
         }
     }
@@ -65,17 +78,21 @@ class EditorExporter(
         output: File,
         onProgress: (Int) -> Unit = {},
         onCancelReady: (() -> Unit) -> Unit = {},
+        cancel: ExportCancelToken = ExportCancelToken(),
     ) {
         val plan = FilterGraph.build(project, clips, format)
         requireFreeSpace(format, plan.expectedDurationMs)
         val inputs = exportInputs(store.projectDir(project.id), plan)
+        requireSourceFiles(inputs)
         output.parentFile?.mkdirs()
         runExport(
             command = exportCommand(plan, inputs, output),
             expectedDurationMs = plan.expectedDurationMs,
             onProgress = onProgress,
             onCancelReady = onCancelReady,
+            cancel = cancel,
         )
+        cancel.check()
         onProgress(100)
     }
 
@@ -90,56 +107,139 @@ class EditorExporter(
         expectedDurationMs: Long,
         onProgress: (Int) -> Unit,
         onCancelReady: (() -> Unit) -> Unit,
-    ) = suspendCancellableCoroutine { continuation ->
-        val cancelled = AtomicBoolean(false)
-        val session = Ffmpeg.runAsync(
-            command,
-            onStatistics = { statistics ->
-                if (continuation.isActive) {
-                    onProgress(exportProgressPercent(statistics.time, expectedDurationMs))
-                }
-            },
-            onComplete = { success, log ->
-                if (continuation.isActive) {
-                    if (cancelled.get()) {
-                        continuation.resumeWithException(IllegalStateException(CANCELLED))
-                    } else if (success) {
-                        continuation.resume(Unit)
-                    } else {
-                        continuation.resumeWithException(
-                            IllegalStateException(Ffmpeg.friendlyMessage("", log)),
-                        )
-                    }
-                }
-            },
-        )
-        onCancelReady {
-            cancelled.set(true)
-            FFmpegKit.cancel(session.sessionId)
+        cancel: ExportCancelToken,
+    ) {
+        val finished = CompletableDeferred<Unit>()
+        try {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                val session = Ffmpeg.runAsync(
+                    command,
+                    onStatistics = { statistics ->
+                        if (continuation.isActive && !cancel.isCancelled) {
+                            onProgress(
+                                exportProgressPercent(statistics.time, expectedDurationMs),
+                            )
+                        }
+                    },
+                    onComplete = { success, message ->
+                        finished.complete(Unit)
+                        cancel.unbindSession()
+                        if (continuation.isActive) {
+                            when {
+                                cancel.isCancelled ->
+                                    continuation.resumeWithException(
+                                        IllegalStateException(EXPORT_CANCELLED),
+                                    )
+
+                                success -> continuation.resume(Unit)
+
+                                else -> continuation.resumeWithException(
+                                    IllegalStateException(message),
+                                )
+                            }
+                        }
+                    },
+                )
+                cancel.bindSession { FFmpegKit.cancel(session.sessionId) }
+                onCancelReady { cancel.cancel() }
+                continuation.invokeOnCancellation { session.cancel() }
+            }
+        } catch (cancelled: CancellationException) {
+            // The FFmpeg session stops asynchronously. Wait for its completion
+            // before the caller deletes the temp file, or FFmpeg can recreate it.
+            withContext(NonCancellable) {
+                withTimeoutOrNull(CANCEL_TIMEOUT_MS) { finished.await() }
+            }
+            throw cancelled
+        } finally {
+            cancel.unbindSession()
         }
-        continuation.invokeOnCancellation { session.cancel() }
     }
 
     private fun exportDir(): File =
         File(context.cacheDir, EXPORT_DIR).apply { mkdirs() }
 
-    private fun copyToUri(file: File, target: Uri) {
-        // "wt" truncates an existing document on API 30+ so saving over a
-        // larger previous file cannot leave stale bytes at the end.
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) "wt" else "w"
-        val output = runCatching {
-            context.contentResolver.openOutputStream(target, mode)
-        }.getOrNull() ?: context.contentResolver.openOutputStream(target)
-        ?: error("Could not open the save location")
-        output.use { sink ->
-            file.inputStream().use { it.copyTo(sink) }
+    private suspend fun copyToUri(file: File, target: Uri, cancel: ExportCancelToken) {
+        // Open the finished export first: a missing temp file must not truncate
+        // the user's target document.
+        val input = runCatching { file.inputStream() }.getOrNull()
+            ?: error("The finished export could not be read.")
+        input.use { source ->
+            cancel.check()
+            coroutineContext.ensureActive()
+            // "wt" truncates an existing document on API 30+ so saving over a
+            // larger previous file cannot leave stale bytes at the end.
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) "wt" else "w"
+            val output = runCatching {
+                context.contentResolver.openOutputStream(target, mode)
+            }.getOrNull() ?: context.contentResolver.openOutputStream(target)
+            ?: error("Could not open the save location")
+            output.use { sink ->
+                val buffer = ByteArray(COPY_BUFFER_BYTES)
+                while (true) {
+                    coroutineContext.ensureActive()
+                    cancel.check()
+                    val read = source.read(buffer)
+                    if (read < 0) break
+                    sink.write(buffer, 0, read)
+                }
+                sink.flush()
+            }
         }
     }
 
     private companion object {
         const val EXPORT_DIR = "editor/export"
         const val NOT_ENOUGH_STORAGE = "Not enough storage. Free some space and try again."
-        const val CANCELLED = "Export was cancelled."
+        const val COPY_BUFFER_BYTES = 64 * 1024
+        const val CANCEL_TIMEOUT_MS = 5_000L
+    }
+}
+
+internal const val EXPORT_CANCELLED = "Export was cancelled."
+internal const val MISSING_SOURCE = "A source file is missing. Re-import this clip and try again."
+
+/**
+ * Cancel state shared by the encoder, the copy, and the caller's cancel action.
+ * [finish] makes a late tap inert; [isCancelled] stays true only while the
+ * export is still running.
+ */
+internal class ExportCancelToken {
+    private val cancelled = AtomicBoolean(false)
+    private val finished = AtomicBoolean(false)
+
+    @Volatile
+    private var sessionCancel: (() -> Unit)? = null
+
+    val isCancelled: Boolean
+        get() = cancelled.get() && !finished.get()
+
+    fun cancel() {
+        if (finished.get()) return
+        if (!cancelled.compareAndSet(false, true)) return
+        sessionCancel?.invoke()
+    }
+
+    fun bindSession(action: () -> Unit) {
+        if (finished.get()) return
+        sessionCancel = action
+        if (cancelled.get()) {
+            sessionCancel = null
+            action()
+        }
+    }
+
+    fun unbindSession() {
+        sessionCancel = null
+    }
+
+    fun finish() {
+        finished.set(true)
+        sessionCancel = null
+    }
+
+    fun check() {
+        if (isCancelled) throw IllegalStateException(EXPORT_CANCELLED)
     }
 }
 
@@ -159,6 +259,12 @@ internal fun exportProgressPercent(timeSeconds: Double, expectedDurationMs: Long
 /** One input file per rendered clip, in the graph's branch order. */
 internal fun exportInputs(projectDir: File, plan: FilterPlan): List<File> =
     plan.inputClips.map { clip -> File(projectDir, clip.sourceFile) }
+
+internal fun requireSourceFiles(inputs: List<File>) {
+    if (inputs.firstOrNull { !it.isFile } != null) {
+        throw IllegalStateException(MISSING_SOURCE)
+    }
+}
 
 internal fun exportCommand(plan: FilterPlan, inputs: List<File>, output: File): String =
     buildString {

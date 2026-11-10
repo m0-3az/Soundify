@@ -171,7 +171,9 @@ object FilterGraph {
     private const val SAMPLE_RATE = 44_100
     private const val AFORMAT =
         "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
-    private const val LIMITER = "alimiter=limit=0.891:attack=5:release=50:level=false"
+    // latency=true compensates the attack lookahead so trim edges stay aligned.
+    private const val LIMITER =
+        "alimiter=limit=0.891:attack=5:release=50:level=false:latency=true"
 
     // Clarity adds a fixed gentle 2:1 control above -18 dBFS (0.125893 linear).
     private const val CLARITY_COMPRESSOR = "acompressor=threshold=0.125893:ratio=2"

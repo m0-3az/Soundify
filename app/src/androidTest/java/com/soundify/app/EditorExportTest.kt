@@ -6,13 +6,20 @@ import androidx.core.content.FileProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.soundify.app.audio.WavWriter
+import com.soundify.app.cleanvideo.Ffmpeg
 import com.soundify.app.cleanvideo.WavStreamReader
 import com.soundify.app.editor.EditorClip
 import com.soundify.app.editor.EditorExporter
 import com.soundify.app.editor.EditorFormat
 import com.soundify.app.editor.EditorProject
 import com.soundify.app.editor.EditorStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -105,25 +112,23 @@ class EditorExportTest {
                 abs(exported.frameCount - 44_100) <= 1,
             )
 
-            // The mandatory -1 dBFS lookahead limiter delays the signal by its
-            // attack time. Find that constant delay, then null the rest.
+            // The limiter must compensate its lookahead so the trim stays
+            // sample-aligned with the source.
             val trimStartFrame = 22_050
-            val latency = bestLag(exported.frames[0], source.frames[0], trimStartFrame)
-            assertTrue("unexpected limiter latency: $latency samples", latency <= 441)
+            val lag = bestLag(exported.frames[0], source.frames[0], trimStartFrame)
+            assertTrue("export is not sample-aligned: lag $lag", lag <= 1)
 
             var maxDifference = 0f
-            val edge = 512
             for (channel in 0 until exported.channels) {
                 val rendered = exported.frames[channel]
                 val original = source.frames[channel]
-                for (index in latency + edge until rendered.size - edge) {
-                    val sourceIndex = trimStartFrame + index - latency
-                    maxDifference = max(maxDifference, abs(rendered[index] - original[sourceIndex]))
+                for (index in rendered.indices) {
+                    val difference = abs(rendered[index] - original[trimStartFrame + index])
+                    maxDifference = max(maxDifference, difference)
                 }
             }
             assertTrue(
-                "the no-effects export must match the source trim, differed by $maxDifference " +
-                    "after $latency samples of limiter latency",
+                "the no-effects export must match the source trim, differed by $maxDifference",
                 maxDifference <= 2e-4f,
             )
         } finally {
@@ -202,6 +207,144 @@ class EditorExportTest {
         }
     }
 
+    @Test
+    fun cancelAfterEncodingNeverWritesTheTarget() {
+        val fixture = Fixture(amplitude = 0.5f)
+        val target = safTarget()
+        val exportDir = File(context.cacheDir, "editor/export")
+        val tempFilesBefore = exportDir.listFiles().orEmpty().toSet()
+        lateinit var cancel: () -> Unit
+        try {
+            val exporter = EditorExporter(context, fixture.store)
+
+            val result = runBlocking {
+                exporter.export(
+                    fixture.project,
+                    fixture.project.clips,
+                    EditorFormat.WAV,
+                    FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        target.file,
+                    ),
+                    onProgress = { progress -> if (progress == 100) cancel() },
+                    onCancelReady = { action -> cancel = action },
+                )
+            }
+
+            assertEquals("Export was cancelled.", result.exceptionOrNull()?.message)
+            assertFalse("a cancelled export must not touch the target", target.file.exists())
+            assertEquals(
+                "the cancelled export left a temp file behind",
+                tempFilesBefore,
+                exportDir.listFiles().orEmpty().toSet(),
+            )
+        } finally {
+            fixture.cleanup()
+            target.file.delete()
+        }
+    }
+
+    @Test
+    fun scopeCancellationWaitsForFfmpegAndLeavesNoTemp() {
+        val fixture = Fixture(amplitude = 0.5f, seconds = 120.0)
+        val target = safTarget()
+        val exportDir = File(context.cacheDir, "editor/export")
+        val tempFilesBefore = exportDir.listFiles().orEmpty().toSet()
+        val ready = CompletableDeferred<Unit>()
+        try {
+            val exporter = EditorExporter(context, fixture.store)
+            val job = runBlocking {
+                val exportJob = launch(Dispatchers.IO) {
+                    exporter.export(
+                        fixture.project,
+                        fixture.project.clips,
+                        EditorFormat.WAV,
+                        FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            target.file,
+                        ),
+                        onCancelReady = { ready.complete(Unit) },
+                    )
+                }
+                withTimeout(15_000) { ready.await() }
+                // Cancel only after FFmpeg has created its temp file, so the
+                // cleanup races a genuinely running session.
+                withTimeout(15_000) {
+                    while (
+                        exportJob.isActive &&
+                        exportDir.listFiles().orEmpty().toSet() == tempFilesBefore
+                    ) {
+                        delay(5)
+                    }
+                }
+                exportJob.cancelAndJoin()
+                exportJob
+            }
+
+            assertTrue("the export coroutine must be cancelled", job.isCancelled)
+            assertFalse("a cancelled export must not write the target", target.file.exists())
+            assertEquals(
+                "the cancelled export left a temp file behind",
+                tempFilesBefore,
+                exportDir.listFiles().orEmpty().toSet(),
+            )
+        } finally {
+            fixture.cleanup()
+            target.file.delete()
+        }
+    }
+
+    @Test
+    fun missingSourceFailsBeforeStartingFfmpeg() {
+        val fixture = Fixture(amplitude = 0.5f)
+        val output = File(fixture.root, "missing-source.wav")
+        var progressCalls = 0
+        try {
+            assertTrue("the test source must be deletable", fixture.source.delete())
+            val exporter = EditorExporter(context, fixture.store)
+
+            val error = runCatching {
+                runBlocking {
+                    exporter.exportToFile(
+                        fixture.project,
+                        fixture.project.clips,
+                        EditorFormat.WAV,
+                        output,
+                        onProgress = { progressCalls++ },
+                    )
+                }
+            }.exceptionOrNull()
+
+            assertEquals(
+                "A source file is missing. Re-import this clip and try again.",
+                error?.message,
+            )
+            assertEquals("FFmpeg must not start without a source", 0, progressCalls)
+            assertFalse(output.exists())
+        } finally {
+            fixture.cleanup()
+        }
+    }
+
+    @Test
+    fun asyncFailuresCarryTheFfmpegReturnCode() = runBlocking {
+        val message = CompletableDeferred<String>()
+        Ffmpeg.runAsync(
+            "-not_a_real_ffmpeg_option",
+            onStatistics = {},
+            onComplete = { success, text ->
+                assertFalse("the bogus command must fail", success)
+                message.complete(text)
+            },
+        )
+
+        val text = withTimeout(30_000) { message.await() }
+
+        assertTrue("expected the return code in: $text", text.contains("FFmpeg failed (1)."))
+    }
+
     private fun safTarget(): Target {
         val file = File(context.filesDir, "exports/editor-${UUID.randomUUID()}.wav")
         file.parentFile?.mkdirs()
@@ -255,14 +398,22 @@ class EditorExportTest {
     private fun writeTone(file: File, seconds: Double, amplitude: Float) {
         val sampleRate = 44_100
         val frameCount = (sampleRate * seconds).toInt()
+        val chunkFrames = sampleRate
+        val samples = FloatArray(chunkFrames * 2)
         WavWriter(file, sampleRate = sampleRate, channels = 2).use { writer ->
-            val samples = FloatArray(frameCount * 2)
-            for (frame in 0 until frameCount) {
-                val value = (sin(2.0 * PI * 440.0 * frame / sampleRate) * amplitude).toFloat()
-                samples[2 * frame] = value
-                samples[2 * frame + 1] = value
+            var frame = 0
+            while (frame < frameCount) {
+                val count = minOf(chunkFrames, frameCount - frame)
+                for (index in 0 until count) {
+                    val position = frame + index
+                    val value =
+                        (sin(2.0 * PI * 440.0 * position / sampleRate) * amplitude).toFloat()
+                    samples[2 * index] = value
+                    samples[2 * index + 1] = value
+                }
+                writer.writeInterleaved(samples, count)
+                frame += count
             }
-            writer.writeInterleaved(samples, frameCount)
         }
     }
 

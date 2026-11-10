@@ -2,6 +2,8 @@ package com.soundify.app.editor
 
 import com.soundify.app.cleanvideo.Ffmpeg
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -97,6 +99,43 @@ class EditorExporterTest {
         assertEquals(0, exportProgressPercent(-1.0, 2_000L))
         assertEquals(0, exportProgressPercent(Double.NaN, 2_000L))
         assertEquals(0, exportProgressPercent(1.0, 0L))
+    }
+
+    @Test
+    fun missingSourceFilesAreRejectedBeforeFfmpeg() {
+        val dir = createTempDirectory("editor-export").toFile()
+        try {
+            val present = File(dir, "present.wav").apply { writeText("audio") }
+            requireSourceFiles(listOf(present))
+
+            val error = assertThrows(IllegalStateException::class.java) {
+                requireSourceFiles(listOf(present, File(dir, "missing.wav")))
+            }
+            assertEquals(
+                "A source file is missing. Re-import this clip and try again.",
+                error.message,
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cancelTokenBindsLateAndFinishesInert() {
+        val cancelled = ExportCancelToken()
+        cancelled.cancel()
+        assertTrue(cancelled.isCancelled)
+        var sessionCancels = 0
+        cancelled.bindSession { sessionCancels++ }
+        assertEquals("a cancel before the session exists must still reach it", 1, sessionCancels)
+
+        val finished = ExportCancelToken()
+        finished.finish()
+        var lateCancels = 0
+        finished.cancel()
+        finished.bindSession { lateCancels++ }
+        assertFalse("a finished export is no longer cancellable", finished.isCancelled)
+        assertEquals("a late tap must not reach a finished session", 0, lateCancels)
     }
 
     @Test

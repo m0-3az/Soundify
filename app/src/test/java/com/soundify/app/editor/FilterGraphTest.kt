@@ -103,7 +103,7 @@ class FilterGraphTest {
                 "volume=1.000000,aresample=44100," +
                 "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo," +
                 "asetpts=PTS-STARTPTS[a0];" +
-                "[a0]alimiter=limit=0.891:attack=5:release=50:level=false[out]",
+                "[a0]alimiter=limit=0.891:attack=5:release=50:level=false:latency=true[out]",
             plan.filterComplex,
         )
         assertEquals("[out]", plan.outputLabel)
@@ -648,6 +648,7 @@ class FilterGraphTest {
     private companion object {
         const val AFORMAT =
             "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
-        const val LIMITER = "alimiter=limit=0.891:attack=5:release=50:level=false"
+        const val LIMITER =
+            "alimiter=limit=0.891:attack=5:release=50:level=false:latency=true"
     }
 }

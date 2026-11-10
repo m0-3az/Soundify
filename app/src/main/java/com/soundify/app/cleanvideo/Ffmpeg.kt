@@ -18,9 +18,10 @@ object Ffmpeg {
     }
 
     /**
-     * Non-blocking variant used by the editor export. [onComplete] receives
-     * the success flag and the complete FFmpeg log; progress arrives through
-     * [onStatistics] on FFmpeg's own callback thread.
+     * Non-blocking variant used by the editor export. Progress arrives through
+     * [onStatistics] on FFmpeg's own callback thread. [onComplete] receives the
+     * success flag and the complete log on success, or a friendly failure
+     * message that retains the FFmpeg return code.
      */
     fun runAsync(
         command: String,
@@ -29,7 +30,10 @@ object Ffmpeg {
     ): FFmpegSession = FFmpegKit.executeAsync(
         command,
         { session ->
-            onComplete(ReturnCode.isSuccess(session.returnCode), session.output ?: "")
+            val code = session.returnCode
+            val log = session.output ?: ""
+            val success = ReturnCode.isSuccess(code)
+            onComplete(success, if (success) log else friendlyMessage(code.toString(), log))
         },
         { _ -> },
         { statistics -> onStatistics(statistics) },
