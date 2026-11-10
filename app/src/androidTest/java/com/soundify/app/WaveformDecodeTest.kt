@@ -49,10 +49,12 @@ class WaveformDecodeTest {
             assertTrue(first.peaks.maxOrNull()!! > 0.4f)
             assertTrue(first.peaks.minOrNull()!! < -0.4f)
             assertTrue(peaksFile.isFile)
+            assertTrue("cache file must not be empty", peaksFile.length() > 0L)
             assertFalse(File(root, "peaks.bin.tmp").exists())
             assertTrue(tempWavs(context).isEmpty())
 
-            source.delete()
+            assertTrue("source must be deleted", source.delete())
+            assertFalse("source must be absent for the cache hit", source.exists())
             val second = Waveform.decode(context, source, peaksFile, actualDurationMs)
 
             assertNotNull(second)
