@@ -11,6 +11,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,6 +65,40 @@ class EditorImporterTest {
             assertEquals(1, otherSourceDir.listFiles()!!.count { it.isFile })
             assertArrayEquals(first.file.readBytes(), other.file.readBytes())
             assertFalse(File(root, "sources").exists())
+        } finally {
+            wav.delete()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun importIntoADeletedProjectDoesNotRecreateIt() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.cacheDir, "editor-import-${UUID.randomUUID()}").apply { mkdirs() }
+        val wav = File(context.cacheDir, "import-source-${UUID.randomUUID()}.wav")
+        try {
+            WavWriter(wav, sampleRate = 44_100, channels = 2).use { writer ->
+                writer.writeInterleaved(FloatArray(44_100 * 2) { 0.1f }, 44_100)
+            }
+            val store = EditorStore(root)
+            val importer = EditorImporter(context, store)
+            val project = store.create("Deleted")
+
+            assertTrue(store.projectDir(project.id).deleteRecursively())
+
+            val error = runCatching {
+                importer.import(project.id, Uri.fromFile(wav), "generated.wav")
+            }.exceptionOrNull()
+
+            assertNotNull("importing into a deleted project must fail", error)
+            assertFalse(
+                "the import must not resurrect the deleted project directory",
+                store.projectDir(project.id).exists(),
+            )
+            assertFalse(
+                "the import temp must be cleaned up",
+                File(context.cacheDir, "editor/import.tmp").exists(),
+            )
         } finally {
             wav.delete()
             root.deleteRecursively()

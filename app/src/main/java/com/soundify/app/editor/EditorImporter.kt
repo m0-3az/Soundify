@@ -16,6 +16,8 @@ data class ImportedSource(
     val durationMs: Long,
     val sampleRate: Int,
     val channels: Int,
+    /** False when the same hash was already registered for this project. */
+    val created: Boolean,
 )
 
 class EditorImporter(
@@ -27,32 +29,32 @@ class EditorImporter(
         withContext(Dispatchers.IO) {
             val cacheRoot = File(context.cacheDir, "editor").apply { mkdirs() }
             val temp = File(cacheRoot, "import.tmp")
-            val hash = try {
-                copyAndHash(uri, temp)
+            var registered: RegisteredSource? = null
+            try {
+                val hash = copyAndHash(uri, temp)
+                registered = store.registerSource(projectId, temp, hash, extensionOf(displayName))
+                val audio = try {
+                    probe(registered.file)
+                } catch (error: Exception) {
+                    null
+                } ?: throw IllegalStateException(NO_AUDIO)
+                ImportedSource(
+                    hash = hash,
+                    file = registered.file,
+                    displayName = displayName?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: registered.file.name,
+                    durationMs = audio.durationMs,
+                    sampleRate = audio.sampleRate,
+                    channels = audio.channels,
+                    created = registered.created,
+                )
             } catch (error: Exception) {
-                temp.delete()
+                // A failed import must not leave a brand-new app copy behind.
+                if (registered?.created == true) registered.file.delete()
                 throw error
-            }
-            val registered = store.registerSource(projectId, temp, hash, extensionOf(displayName))
-            val audio = try {
-                probe(registered.file)
-            } catch (error: Exception) {
-                null
-            }
-            if (audio == null) {
+            } finally {
                 temp.delete()
-                if (registered.created) registered.file.delete()
-                throw IllegalStateException(NO_AUDIO)
             }
-            ImportedSource(
-                hash = hash,
-                file = registered.file,
-                displayName = displayName?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: registered.file.name,
-                durationMs = audio.durationMs,
-                sampleRate = audio.sampleRate,
-                channels = audio.channels,
-            )
         }
 
     private fun copyAndHash(uri: Uri, target: File): String {

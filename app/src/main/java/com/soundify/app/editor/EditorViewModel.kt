@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Owns the editor project list, the open project, its undo history and
@@ -45,7 +46,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
+    private val _readOnly = MutableStateFlow(false)
+    val readOnly: StateFlow<Boolean> = _readOnly.asStateFlow()
+
+    private val deletingIds = ConcurrentHashMap.newKeySet<String>()
     private var saveJob: Job? = null
+    private var saveJobProjectId: String? = null
 
     init {
         refresh()
@@ -53,7 +59,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refresh() {
         viewModelScope.launch(Dispatchers.IO) {
-            _projects.value = store.list()
+            _projects.value = runCatching { store.list() }.getOrDefault(_projects.value)
         }
     }
 
@@ -67,8 +73,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun create(name: String, onCreated: (String) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
-            val project = store.create(name.trim().ifBlank { UNTITLED })
-            _projects.value = store.list()
+            savePending()
+            val project = runCatching { store.create(name.trim().ifBlank { UNTITLED }) }
+                .getOrElse {
+                    withContext(Dispatchers.Main) {
+                        _message.value = "Could not create this edit. Free some space and try again."
+                    }
+                    return@launch
+                }
+            _projects.value = runCatching { store.list() }.getOrDefault(_projects.value)
             withContext(Dispatchers.Main) {
                 activate(project)
                 onCreated(project.id)
@@ -91,6 +104,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             var createdId: String? = null
             try {
+                savePending()
                 val project = store.create(projectNameFor(displayName))
                 createdId = project.id
                 val imported = importer.import(project.id, uri, displayName)
@@ -100,12 +114,19 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val reloaded = store.load(saved.id) ?: saved
                 _projects.value = store.list()
                 withContext(Dispatchers.Main) {
-                    activate(reloaded)
-                    onCreated(reloaded.id)
+                    // If the user opened another project while this import ran,
+                    // leave it alone; the new project is in the home list.
+                    if (_active.value == null || _active.value?.id == reloaded.id) {
+                        activate(reloaded)
+                        onCreated(reloaded.id)
+                    }
                 }
             } catch (error: Throwable) {
-                createdId?.let { store.delete(it) }
-                _projects.value = store.list()
+                createdId?.let { id ->
+                    deletingIds.add(id)
+                    store.delete(id)
+                }
+                _projects.value = runCatching { store.list() }.getOrDefault(_projects.value)
                 withContext(Dispatchers.Main) {
                     _message.value = error.message ?: "Could not import this audio file"
                 }
@@ -116,6 +137,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun open(projectId: String, onOpened: () -> Unit = {}) {
+        if (projectId in deletingIds) {
+            _message.value = "This edit could not be opened"
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             savePending()
             val project = store.load(projectId)
@@ -137,14 +162,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     /** Builds or reads the cached waveform envelope for [clip]. */
     suspend fun peaksFor(projectId: String, clip: EditorClip): PeakData? =
         withContext(Dispatchers.IO) {
-            val source = sourceFile(projectId, clip)
-            if (!source.isFile) return@withContext null
-            Waveform.decode(
-                getApplication(),
-                source,
-                store.peaksFile(projectId, clip.sourceHash),
-                clip.sourceDurationMs,
-            )
+            runCatching {
+                val source = sourceFile(projectId, clip)
+                if (!source.isFile) return@runCatching null
+                Waveform.decode(
+                    getApplication(),
+                    source,
+                    store.peaksFile(projectId, clip.sourceHash),
+                    clip.sourceDurationMs,
+                )
+            }.getOrNull()
         }
 
     /**
@@ -156,23 +183,37 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         if (_isBusy.value) return
         _isBusy.value = true
         viewModelScope.launch(Dispatchers.IO) {
+            var imported: ImportedSource? = null
             try {
-                val imported = importer.import(project.id, uri, displayName)
-                val clip = clipFrom(imported)
+                val source = importer.import(project.id, uri, displayName)
+                imported = source
+                val clip = clipFrom(source)
                 withContext(Dispatchers.Main) {
-                    if (_active.value?.id != project.id) {
-                        _message.value = "This edit is no longer open"
+                    val current = _active.value
+                    val abandoned = current?.id != project.id ||
+                        project.id in deletingIds ||
+                        _readOnly.value
+                    if (abandoned) {
+                        if (source.created) source.file.delete()
+                        _message.value = if (_readOnly.value) {
+                            "This edit is read-only"
+                        } else {
+                            "This edit is no longer open"
+                        }
                     } else {
-                        edit(coalesceKey = null) { current ->
-                            current.copy(clips = current.clips + clip)
+                        edit(coalesceKey = null) { project ->
+                            project.copy(clips = project.clips + clip)
                         }
                         if (_active.value?.clips?.any { it.id == clip.id } == true) {
                             onAdded(clip.id)
+                        } else if (source.created) {
+                            source.file.delete()
                         }
                     }
                 }
             } catch (error: Throwable) {
-                _projects.value = store.list()
+                if (imported?.created == true) imported.file.delete()
+                _projects.value = runCatching { store.list() }.getOrDefault(_projects.value)
                 withContext(Dispatchers.Main) {
                     _message.value = error.message ?: "Could not import this audio file"
                 }
@@ -189,6 +230,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         onProgress: (Int) -> Unit = {},
         onCancelReady: (() -> Unit) -> Unit = {},
     ): Result<Unit> {
+        if (_readOnly.value) {
+            return Result.failure(
+                IllegalStateException("This edit was created by a newer version and is read-only"),
+            )
+        }
         saveNow()
         val project = _active.value
             ?: return Result.failure(IllegalStateException("No edit is open"))
@@ -203,18 +249,24 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun delete(projectId: String) {
+        // Mark first: a pending or in-flight save must never recreate the dir.
+        deletingIds.add(projectId)
+        if (_active.value?.id == projectId) {
+            _active.value = null
+            _readOnly.value = false
+            history.reset()
+            refreshHistoryFlags()
+        }
         viewModelScope.launch(Dispatchers.IO) {
-            saveJob?.cancelAndJoin()
-            val deleted = store.delete(projectId)
-            _projects.value = store.list()
+            if (saveJobProjectId == projectId) {
+                saveJob?.cancelAndJoin()
+                saveJob = null
+                saveJobProjectId = null
+            }
+            val deleted = runCatching { store.delete(projectId) }.getOrDefault(false)
+            _projects.value = runCatching { store.list() }.getOrDefault(_projects.value)
             withContext(Dispatchers.Main) {
-                if (!deleted) {
-                    _message.value = "Could not delete this edit"
-                } else if (_active.value?.id == projectId) {
-                    _active.value = null
-                    history.reset()
-                    refreshHistoryFlags()
-                }
+                if (!deleted) _message.value = "Could not delete this edit"
             }
         }
     }
@@ -225,11 +277,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
      * project back to disk after the delete.
      */
     fun deleteActive(projectId: String) {
-        if (_active.value?.id == projectId) {
-            _active.value = null
-            history.reset()
-            refreshHistoryFlags()
-        }
         delete(projectId)
     }
 
@@ -240,84 +287,138 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun edit(coalesceKey: String?, transform: (EditorProject) -> EditorProject) {
         val project = _active.value ?: return
+        if (_readOnly.value || project.id in deletingIds) return
         val updated = transform(project).sanitized()
         if (updated == project) return
         history.record(project, coalesceKey)
         _active.value = updated
         refreshHistoryFlags()
-        scheduleSave(updated)
+        scheduleSave(updated.id)
     }
 
     fun undo() {
         val project = _active.value ?: return
+        if (_readOnly.value || project.id in deletingIds) return
         val previous = history.undo(project) ?: return
         _active.value = previous
         refreshHistoryFlags()
-        scheduleSave(previous)
+        scheduleSave(previous.id)
     }
 
     fun redo() {
         val project = _active.value ?: return
+        if (_readOnly.value || project.id in deletingIds) return
         val next = history.redo(project) ?: return
         _active.value = next
         refreshHistoryFlags()
-        scheduleSave(next)
+        scheduleSave(next.id)
     }
 
     /** Schedules a save 500 ms after the last change. */
     fun save() {
-        _active.value?.let(::scheduleSave)
+        _active.value?.let { project -> scheduleSave(project.id) }
     }
 
     /** Saves the active project now; used before export and when leaving. */
     suspend fun saveNow() {
-        saveJob?.cancel()
         val project = _active.value ?: return
+        if (project.isFutureSchema || project.id in deletingIds) return
+        if (saveJobProjectId == project.id) {
+            saveJob?.cancelAndJoin()
+            saveJob = null
+            saveJobProjectId = null
+        }
         withContext(Dispatchers.IO) {
-            store.save(project)
-            _projects.value = store.list()
+            if (project.id in deletingIds) return@withContext
+            runCatching {
+                store.save(project)
+                _projects.value = store.list()
+            }.onFailure {
+                withContext(Dispatchers.Main) {
+                    _message.value = "Could not save this edit. Free some space and try again."
+                }
+            }
         }
     }
 
     /** Fire-and-forget save for composable disposal. */
     fun flush() {
-        saveJob?.cancel()
         val project = _active.value ?: return
+        if (project.isFutureSchema || project.id in deletingIds) return
+        val previous = if (saveJobProjectId == project.id) saveJob else null
+        saveJobProjectId = project.id
         saveJob = viewModelScope.launch(Dispatchers.IO) {
-            store.save(project)
-            _projects.value = store.list()
+            previous?.cancelAndJoin()
+            if (project.id in deletingIds) return@launch
+            runCatching {
+                store.save(project)
+                _projects.value = store.list()
+            }.onFailure {
+                withContext(Dispatchers.Main) {
+                    _message.value = "Could not save this edit. Free some space and try again."
+                }
+            }
         }
+    }
+
+    /** Saves then detaches the active project when leaving the editor. */
+    fun closeActive() {
+        val project = _active.value ?: return
+        if (!project.isFutureSchema) flush()
+        _active.value = null
+        _readOnly.value = false
+        history.reset()
+        refreshHistoryFlags()
     }
 
     override fun onCleared() {
         saveJob?.cancel()
         // Best effort: a small JSON write, so a process teardown does not lose
         // the last edit that had not reached its 500 ms debounce.
-        _active.value?.let { project -> runCatching { store.save(project) } }
+        _active.value
+            ?.takeIf { !it.isFutureSchema && it.id !in deletingIds }
+            ?.let { project -> runCatching { store.save(project) } }
         super.onCleared()
     }
 
     private fun activate(project: EditorProject) {
-        saveJob?.cancel()
         _active.value = project
+        _readOnly.value = project.isFutureSchema
         history.reset()
         refreshHistoryFlags()
     }
 
-    private fun scheduleSave(project: EditorProject) {
-        saveJob?.cancel()
+    private fun scheduleSave(projectId: String) {
+        if (saveJobProjectId == projectId) saveJob?.cancel()
+        saveJobProjectId = projectId
         saveJob = viewModelScope.launch(Dispatchers.IO) {
             delay(SAVE_DEBOUNCE_MS)
-            store.save(project)
-            _projects.value = store.list()
+            if (projectId in deletingIds) return@launch
+            val latest = _active.value
+                ?.takeIf { it.id == projectId && !it.isFutureSchema }
+                ?: return@launch
+            runCatching {
+                store.save(latest)
+                _projects.value = store.list()
+            }.onFailure {
+                withContext(Dispatchers.Main) {
+                    _message.value = "Could not save this edit. Free some space and try again."
+                }
+            }
         }
     }
 
     /** Saves a snapshot that was waiting for its debounce, before switching projects. */
     private suspend fun savePending() {
+        val project = _active.value
         saveJob?.cancelAndJoin()
-        val project = _active.value ?: return
-        store.save(project)
+        saveJob = null
+        saveJobProjectId = null
+        if (project == null || project.isFutureSchema || project.id in deletingIds) return
+        runCatching {
+            store.save(project)
+            _projects.value = store.list()
+        }
     }
 
     private fun refreshHistoryFlags() {

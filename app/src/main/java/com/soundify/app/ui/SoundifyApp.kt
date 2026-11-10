@@ -90,6 +90,9 @@ fun SoundifyApp(
     }
 
     BackHandler(enabled = screen !is Screen.Library) {
+        if (screen is Screen.Editor || screen is Screen.EditorHome) {
+            editorViewModel.closeActive()
+        }
         viewModel.back()
     }
 
@@ -164,7 +167,11 @@ fun SoundifyApp(
                 projects = editorProjects,
                 isBusy = editorBusy,
                 onOpen = { projectId ->
-                    editorViewModel.open(projectId) { viewModel.openEditor(projectId) }
+                    editorViewModel.open(projectId) {
+                        if (viewModel.screen.value is Screen.EditorHome) {
+                            viewModel.openEditor(projectId)
+                        }
+                    }
                 },
                 onCreate = { uri, displayName ->
                     editorViewModel.createFromAudio(uri, displayName) { projectId ->
@@ -181,14 +188,17 @@ fun SoundifyApp(
                 DisposableEffect(editorViewModel) {
                     onDispose { editorViewModel.flush() }
                 }
-                val project = editorActive
+                val project = editorActive?.takeIf { it.id == destination.projectId }
                 if (project == null) {
                     EditorScreenShell(projectName = null, onBack = viewModel::back)
                 } else {
                     EditorScreen(
                         project = project,
                         viewModel = editorViewModel,
-                        onBack = viewModel::back,
+                        onBack = {
+                            editorViewModel.closeActive()
+                            viewModel.back()
+                        },
                         onDeleted = {
                             editorViewModel.deleteActive(project.id)
                             viewModel.back()

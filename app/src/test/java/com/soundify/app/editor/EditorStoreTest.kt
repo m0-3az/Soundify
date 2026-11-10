@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -219,6 +220,33 @@ class EditorStoreTest {
                 projectJson.length() + source.file.length() + peaks.length(),
                 store.bytesOf(project.id),
             )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun sourceAndPeaksRefuseAProjectThatNoLongerExists() {
+        val root = root()
+        try {
+            val store = EditorStore(root)
+            val temp = File(root, "incoming.tmp").apply { writeText("audio bytes") }
+
+            assertThrows(IllegalArgumentException::class.java) {
+                store.sourceFile("missing", "hash", "wav")
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                store.peaksFile("missing", "hash")
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                store.registerSource("missing", temp, "hash", "wav")
+            }
+
+            assertFalse(
+                "a refused source must not recreate the deleted project directory",
+                File(root, "missing").exists(),
+            )
+            assertTrue("the caller still owns the temp file", temp.isFile)
         } finally {
             root.deleteRecursively()
         }

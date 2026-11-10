@@ -3,6 +3,7 @@ package com.soundify.app
 import android.app.Application
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -12,6 +13,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.soundify.app.audio.WavWriter
 import com.soundify.app.data.ThemePreferences
+import com.soundify.app.editor.EditorClip
+import com.soundify.app.editor.EditorProject
+import com.soundify.app.editor.EditorStore
 import com.soundify.app.editor.EditorViewModel
 import com.soundify.app.editor.renderedDurationMs
 import com.soundify.app.ui.SoundifyApp
@@ -95,6 +99,41 @@ class EditorScreenTest {
         compose.onNodeWithText("Start (ms)").assertExists()
         compose.onNodeWithText("End (ms)").assertExists()
         compose.onNodeWithText("Apply trim").assertExists()
+    }
+
+    @Test
+    fun futureSchemaProjectOpensReadOnly() {
+        val store = EditorStore(File(app.filesDir, "editor"))
+        val project = EditorProject(
+            schemaVersion = 99,
+            name = "Future edit",
+            clips = listOf(
+                EditorClip(
+                    sourceHash = "future-hash",
+                    sourceFile = "sources/future.wav",
+                    displayName = "future.wav",
+                    sourceDurationMs = 2_000L,
+                    sourceSampleRate = 44_100,
+                    sourceChannels = 2,
+                ),
+            ),
+        )
+        store.save(project)
+        projectId = project.id
+
+        compose.onNodeWithText("Audio editor").performClick()
+        compose.runOnUiThread {
+            editor.open(project.id) { soundify.openEditor(project.id) }
+        }
+
+        compose.waitUntil(30_000) {
+            compose.onAllNodesWithText(
+                "This edit was created by a newer version of Soundify. " +
+                    "It opens read-only.",
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Trim").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Save audio").assertIsNotEnabled()
     }
 
     private fun writeTone(file: File) {

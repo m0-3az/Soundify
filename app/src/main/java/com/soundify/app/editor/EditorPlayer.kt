@@ -116,7 +116,8 @@ class EditorPlayer {
         this.gainDb = gainDb
         val player = player ?: return
         if (!prepared) return
-        val gain = previewGain(gainDb)
+        val clipGain = queue?.current?.clip?.gainDb ?: 0f
+        val gain = combinedPreviewGain(gainDb, clipGain)
         runCatching { player.setVolume(gain, gain) }
     }
 
@@ -233,7 +234,8 @@ class EditorPlayer {
         if (this.player !== player) return
         val clip = queue?.current?.clip ?: return
         prepared = true
-        val gain = previewGain(gainDb)
+        val clipGain = queue?.current?.clip?.gainDb ?: 0f
+        val gain = combinedPreviewGain(gainDb, clipGain)
         runCatching { player.setVolume(gain, gain) }
         applyPlaybackParams(player)
         val target = pendingSeekMs ?: clip.trimStartMs
@@ -388,6 +390,10 @@ internal fun previewGain(gainDb: Float): Float {
     val gain = 10.0.pow(gainDb / 20.0).toFloat()
     return if (gain.isNaN()) 1f else gain.coerceIn(0f, 1f)
 }
+
+/** A clip's own gain combined with the player's gain, capped at unity. */
+internal fun combinedPreviewGain(playerGainDb: Float, clipGainDb: Float): Float =
+    previewGain(playerGainDb + clipGainDb)
 
 /** Pitch multiplier for a semitone offset; invalid factors mean no shift. */
 internal fun pitchRatio(semitones: Int): Float {

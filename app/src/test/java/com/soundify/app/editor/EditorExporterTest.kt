@@ -92,13 +92,13 @@ class EditorExporterTest {
     @Test
     fun progressIsPercentOfTheExpectedDurationAndClamped() {
         assertEquals(0, exportProgressPercent(0.0, 2_000L))
-        assertEquals(50, exportProgressPercent(1.0, 2_000L))
-        assertEquals(25, exportProgressPercent(0.5, 2_000L))
-        assertEquals(100, exportProgressPercent(2.0, 2_000L))
-        assertEquals(100, exportProgressPercent(3.5, 2_000L))
+        assertEquals(50, exportProgressPercent(1_000.0, 2_000L))
+        assertEquals(25, exportProgressPercent(500.0, 2_000L))
+        assertEquals(100, exportProgressPercent(2_000.0, 2_000L))
+        assertEquals(100, exportProgressPercent(3_500.0, 2_000L))
         assertEquals(0, exportProgressPercent(-1.0, 2_000L))
         assertEquals(0, exportProgressPercent(Double.NaN, 2_000L))
-        assertEquals(0, exportProgressPercent(1.0, 0L))
+        assertEquals(0, exportProgressPercent(1_000.0, 0L))
     }
 
     @Test

@@ -154,6 +154,31 @@ fun EditorProject.locate(positionMs: Long): Pair<Int, Long> {
     return clips.lastIndex to clips.last().trimEndMs
 }
 
+/**
+ * Position of [sourceMs] as a fraction of the whole source. The waveform draws
+ * the full source envelope, so the playhead and the trim selection must use
+ * the same coordinate system.
+ */
+fun waveformFraction(sourceMs: Long, sourceDurationMs: Long): Float {
+    if (sourceDurationMs <= 0L) return 0f
+    return (sourceMs.toFloat() / sourceDurationMs).coerceIn(0f, 1f)
+}
+
+/**
+ * Source position for a tap at [fraction] of the whole source, clamped to the
+ * clip's trim range.
+ */
+fun waveformSourceMs(
+    fraction: Float,
+    sourceDurationMs: Long,
+    trimStartMs: Long,
+    trimEndMs: Long,
+): Long {
+    val position = (fraction.coerceIn(0f, 1f) * sourceDurationMs.coerceAtLeast(1L))
+        .roundToLong()
+    return position.coerceIn(trimStartMs, trimEndMs)
+}
+
 private const val MIN_CLIP_MS = 250L
 
 private fun EditorClip.sanitized(): EditorClip {

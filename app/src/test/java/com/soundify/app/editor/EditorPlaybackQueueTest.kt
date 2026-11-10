@@ -54,8 +54,7 @@ class EditorPlaybackQueueTest {
     }
 
     @Test
-    fun previewGainIsLinearAndCappedAtUnity() {
-        assertEquals(1f, previewGain(0f), 0f)
+    fun previewGainIsLinearAndCappedAtUnity() {        assertEquals(1f, previewGain(0f), 0f)
         assertEquals(0.5f, previewGain(-6.0206f), 1e-3f)
         assertEquals(0.1f, previewGain(-20f), 1e-4f)
         assertEquals("a boost must not make preview louder than unity", 1f, previewGain(6f), 0f)
@@ -65,8 +64,14 @@ class EditorPlaybackQueueTest {
     }
 
     @Test
-    fun pitchRatioUsesTwelveToneEqualTemperament() {
-        assertEquals(1f, pitchRatio(0), 0f)
+    fun clipGainIsCombinedWithThePlayerGainAndCappedAtUnity() {
+        assertEquals(0.5f, combinedPreviewGain(0f, -6.0206f), 1e-3f)
+        assertEquals(1f, combinedPreviewGain(0f, 6f), 0f)
+        assertEquals(0.25f, combinedPreviewGain(-6.0206f, -6.0206f), 1e-3f)
+    }
+
+    @Test
+    fun pitchRatioUsesTwelveToneEqualTemperament() {        assertEquals(1f, pitchRatio(0), 0f)
         assertEquals(2f, pitchRatio(12), 1e-5f)
         assertEquals(0.5f, pitchRatio(-12), 1e-5f)
         assertEquals(1.4983f, pitchRatio(7), 1e-3f)

@@ -73,6 +73,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.soundify.app.editor.EXPORT_CANCELLED
 import com.soundify.app.editor.EditorClip
@@ -87,6 +89,8 @@ import com.soundify.app.editor.locate
 import com.soundify.app.editor.positionAt
 import com.soundify.app.editor.renderedDurationMs
 import com.soundify.app.editor.splitClip
+import com.soundify.app.editor.waveformFraction
+import com.soundify.app.editor.waveformSourceMs
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToLong
@@ -113,6 +117,7 @@ fun EditorScreen(
     val canUndo by viewModel.canUndo.collectAsStateWithLifecycle()
     val canRedo by viewModel.canRedo.collectAsStateWithLifecycle()
     val importing by viewModel.isBusy.collectAsStateWithLifecycle()
+    val readOnly by viewModel.readOnly.collectAsStateWithLifecycle()
 
     var selectedClipId by rememberSaveable(project.id) {
         mutableStateOf(project.clips.firstOrNull()?.id)
@@ -142,9 +147,15 @@ fun EditorScreen(
     var scrubMs by remember(project.id, selectedClip?.id) {
         mutableLongStateOf(selectedClip?.trimStartMs ?: 0L)
     }
+    var queueDirty by remember(project.id) { mutableStateOf(false) }
     LaunchedEffect(selectedClip?.trimStartMs, selectedClip?.trimEndMs) {
         val clip = selectedClip ?: return@LaunchedEffect
         scrubMs = scrubMs.coerceIn(clip.trimStartMs, clip.trimEndMs)
+    }
+
+    // Raw MediaPlayer must not keep playing after the app is backgrounded.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        player.pause()
     }
 
     var toolSheet by remember { mutableStateOf<EditorTool?>(null) }
@@ -157,7 +168,8 @@ fun EditorScreen(
     var pendingFormat by rememberSaveable { mutableStateOf<String?>(null) }
 
     val exporting = exportProgress >= 0
-    val editingEnabled = !exporting && !importing
+    val transportEnabled = !exporting && !importing
+    val editingEnabled = transportEnabled && !readOnly
 
     fun pauseIfPlaying() {
         if (playing) {
@@ -169,6 +181,7 @@ fun EditorScreen(
     fun applyEdit(key: String?, transform: (EditorProject) -> EditorProject) {
         if (!editingEnabled) return
         pauseIfPlaying()
+        queueDirty = true
         viewModel.edit(key, transform)
     }
 
@@ -219,6 +232,7 @@ fun EditorScreen(
                 )
             }
             viewModel.addAudio(selected, displayName(context, selected)) { clipId ->
+                queueDirty = true
                 selectedClipId = clipId
             }
         }
@@ -228,6 +242,10 @@ fun EditorScreen(
         val clip = selectedClip ?: return
         if (playing) {
             pauseIfPlaying()
+            return
+        }
+        if (!queueDirty && playerIndex == selectedIndex && playerPosition < clip.trimEndMs) {
+            player.resume()
             return
         }
         val index = project.clips.indexOfFirst { it.id == clip.id }.coerceAtLeast(0)
@@ -240,12 +258,14 @@ fun EditorScreen(
         }
         player.load(items, index)
         player.seekToSourceMs(source)
+        queueDirty = false
     }
 
     fun seekProject(positionMs: Long) {
         val (index, source) = project.locate(positionMs)
         val clip = project.clips.getOrNull(index) ?: return
         if (playing && index != playerIndex) player.pause()
+        queueDirty = true
         selectedClipId = clip.id
         scrubMs = source
         if (playerIndex == index) player.seekToSourceMs(source)
@@ -257,12 +277,14 @@ fun EditorScreen(
         val index = project.clips.indexOfFirst { it.id == clip.id }
         val at = if (playing && playerIndex == selectedIndex) playerPosition else scrubMs
         pauseIfPlaying()
+        queueDirty = true
         viewModel.edit(null) { it.splitClip(clip.id, at) }
         viewModel.active.value?.clips?.getOrNull(index + 1)?.let { selectedClipId = it.id }
     }
 
     fun selectClip(clip: EditorClip) {
         pauseIfPlaying()
+        queueDirty = true
         selectedClipId = clip.id
         scrubMs = clip.trimStartMs
     }
@@ -322,6 +344,7 @@ fun EditorScreen(
                     IconButton(
                         onClick = {
                             pauseIfPlaying()
+                            queueDirty = true
                             viewModel.undo()
                         },
                         enabled = canUndo && editingEnabled,
@@ -331,6 +354,7 @@ fun EditorScreen(
                     IconButton(
                         onClick = {
                             pauseIfPlaying()
+                            queueDirty = true
                             viewModel.redo()
                         },
                         enabled = canRedo && editingEnabled,
@@ -339,7 +363,7 @@ fun EditorScreen(
                     }
                     IconButton(
                         onClick = { saveSheetOpen = true },
-                        enabled = !exporting,
+                        enabled = !exporting && !readOnly,
                     ) {
                         Icon(Icons.Default.Save, contentDescription = "Save audio")
                     }
@@ -375,6 +399,17 @@ fun EditorScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (readOnly) {
+                item {
+                    Text(
+                        "This edit was created by a newer version of Soundify. " +
+                            "It opens read-only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
             if (importing) {
                 item {
                     Column {
@@ -405,11 +440,10 @@ fun EditorScreen(
                             }
                         } else {
                             val duration = selectedClip.sourceDurationMs.coerceAtLeast(1L)
-                            val playheadFraction =
-                                ((playheadSourceMs - selectedClip.trimStartMs).toFloat() /
-                                    (selectedClip.trimEndMs - selectedClip.trimStartMs)
-                                        .coerceAtLeast(1L))
-                                    .coerceIn(0f, 1f)
+                            val playheadFraction = waveformFraction(
+                                playheadSourceMs,
+                                selectedClip.sourceDurationMs,
+                            )
                             val loadedPeaks = peaks
                             if (loadedPeaks == null) {
                                 Box(
@@ -427,34 +461,40 @@ fun EditorScreen(
                                     selection = (selectedClip.trimStartMs.toFloat() / duration)..
                                         (selectedClip.trimEndMs.toFloat() / duration),
                                     onSeek = { fraction ->
-                                        val source = (
-                                            selectedClip.trimStartMs +
-                                                fraction * (selectedClip.trimEndMs -
-                                                    selectedClip.trimStartMs)
-                                            ).roundToLong()
+                                        val source = waveformSourceMs(
+                                            fraction = fraction,
+                                            sourceDurationMs = selectedClip.sourceDurationMs,
+                                            trimStartMs = selectedClip.trimStartMs,
+                                            trimEndMs = selectedClip.trimEndMs,
+                                        )
                                         scrubMs = source
+                                        queueDirty = true
                                         if (playing && playerIndex == selectedIndex) {
                                             player.seekToSourceMs(source)
                                         }
                                     },
-                                    onTrimChange = { range ->
-                                        val start = (range.start * duration).roundToLong()
-                                            .coerceIn(0L, duration - MIN_TRIM_MS)
-                                        val end = (range.endInclusive * duration).roundToLong()
-                                            .coerceIn(start + MIN_TRIM_MS, duration)
-                                        applyEdit("trim:${selectedClip.id}") { current ->
-                                            current.copy(
-                                                clips = current.clips.map { item ->
-                                                    if (item.id == selectedClip.id) {
-                                                        item.copy(
-                                                            trimStartMs = start,
-                                                            trimEndMs = end,
-                                                        )
-                                                    } else {
-                                                        item
-                                                    }
-                                                },
-                                            )
+                                    onTrimChange = if (readOnly) {
+                                        null
+                                    } else {
+                                        { range ->
+                                            val start = (range.start * duration).roundToLong()
+                                                .coerceIn(0L, duration - MIN_TRIM_MS)
+                                            val end = (range.endInclusive * duration).roundToLong()
+                                                .coerceIn(start + MIN_TRIM_MS, duration)
+                                            applyEdit("trim:${selectedClip.id}") { current ->
+                                                current.copy(
+                                                    clips = current.clips.map { item ->
+                                                        if (item.id == selectedClip.id) {
+                                                            item.copy(
+                                                                trimStartMs = start,
+                                                                trimEndMs = end,
+                                                            )
+                                                        } else {
+                                                            item
+                                                        }
+                                                    },
+                                                )
+                                            }
                                         }
                                     },
                                     modifier = Modifier
@@ -489,7 +529,7 @@ fun EditorScreen(
                     ) {
                         IconButton(
                             onClick = ::playPause,
-                            enabled = editingEnabled && selectedClip != null,
+                            enabled = transportEnabled && selectedClip != null,
                         ) {
                             Icon(
                                 if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -501,7 +541,7 @@ fun EditorScreen(
                                 value = currentProjectMs.toFloat(),
                                 onValueChange = { seekProject(it.roundToLong()) },
                                 valueRange = 0f..project.durationMs.coerceAtLeast(1L).toFloat(),
-                                enabled = editingEnabled && project.clips.isNotEmpty(),
+                                enabled = transportEnabled && project.clips.isNotEmpty(),
                             )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -687,7 +727,7 @@ fun EditorScreen(
             confirmButton = {
                 TextButton(
                     onClick = { cancelAction?.invoke() },
-                    enabled = cancelAction != null,
+                    enabled = cancelAction != null && exportProgress < 100,
                 ) {
                     Text("Cancel")
                 }

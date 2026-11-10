@@ -9,14 +9,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.roundToInt
@@ -59,7 +57,11 @@ class EditorExporter(
         try {
             exportToFile(project, clips, format, output, onProgress, onCancelReady, cancel)
             cancel.check()
-            copyToUri(output, target, cancel)
+            // Encoding is done. The copy to the user's document is the commit
+            // point: finish the token first so Cancel, rotation, or teardown
+            // cannot truncate a target that has already been opened.
+            cancel.finish()
+            copyToUri(output, target)
             Result.success(Unit)
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -159,14 +161,12 @@ class EditorExporter(
     private fun exportDir(): File =
         File(context.cacheDir, EXPORT_DIR).apply { mkdirs() }
 
-    private suspend fun copyToUri(file: File, target: Uri, cancel: ExportCancelToken) {
+    private suspend fun copyToUri(file: File, target: Uri) {
         // Open the finished export first: a missing temp file must not truncate
         // the user's target document.
         val input = runCatching { file.inputStream() }.getOrNull()
             ?: error("The finished export could not be read.")
         input.use { source ->
-            cancel.check()
-            coroutineContext.ensureActive()
             // "wt" truncates an existing document on API 30+ so saving over a
             // larger previous file cannot leave stale bytes at the end.
             val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) "wt" else "w"
@@ -177,8 +177,6 @@ class EditorExporter(
             output.use { sink ->
                 val buffer = ByteArray(COPY_BUFFER_BYTES)
                 while (true) {
-                    coroutineContext.ensureActive()
-                    cancel.check()
                     val read = source.read(buffer)
                     if (read < 0) break
                     sink.write(buffer, 0, read)
@@ -249,10 +247,10 @@ private const val FREE_SPACE_HEADROOM_BYTES = 50L * 1024L * 1024L
 internal fun exportRequiredBytes(format: EditorFormat, durationMs: Long): Long =
     2L * format.estimatedBytes(durationMs) + FREE_SPACE_HEADROOM_BYTES
 
-/** FFmpeg reports seconds; the plan reports milliseconds. */
-internal fun exportProgressPercent(timeSeconds: Double, expectedDurationMs: Long): Int {
-    if (expectedDurationMs <= 0L || !timeSeconds.isFinite() || timeSeconds <= 0.0) return 0
-    val percent = timeSeconds * 1_000.0 / expectedDurationMs * 100.0
+/** ffmpeg-kit reports [Statistics.time] in milliseconds. */
+internal fun exportProgressPercent(timeMs: Double, expectedDurationMs: Long): Int {
+    if (expectedDurationMs <= 0L || !timeMs.isFinite() || timeMs <= 0.0) return 0
+    val percent = timeMs / expectedDurationMs * 100.0
     return percent.roundToInt().coerceIn(0, 100)
 }
 

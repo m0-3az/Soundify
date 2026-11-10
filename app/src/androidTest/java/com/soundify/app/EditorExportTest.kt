@@ -8,11 +8,15 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.soundify.app.audio.WavWriter
 import com.soundify.app.cleanvideo.Ffmpeg
 import com.soundify.app.cleanvideo.WavStreamReader
+import com.arthenica.ffmpegkit.FFprobeKit
 import com.soundify.app.editor.EditorClip
 import com.soundify.app.editor.EditorExporter
 import com.soundify.app.editor.EditorFormat
 import com.soundify.app.editor.EditorProject
 import com.soundify.app.editor.EditorStore
+import com.soundify.app.editor.DenoiseMode
+import com.soundify.app.editor.EqPreset
+import com.soundify.app.editor.renderedDurationMs
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
@@ -131,6 +135,88 @@ class EditorExportTest {
                 "the no-effects export must match the source trim, differed by $maxDifference",
                 maxDifference <= 2e-4f,
             )
+        } finally {
+            fixture.cleanup()
+        }
+    }
+
+    @Test
+    fun allEffectsGraphEncodesOnDevice() {
+        val fixture = Fixture(amplitude = 0.5f)
+        val output = File(fixture.root, "all-effects.wav")
+        try {
+            val clip = fixture.project.clips.single().copy(
+                trimStartMs = 300L,
+                trimEndMs = 1_700L,
+                fadeInMs = 200L,
+                fadeOutMs = 200L,
+                gainDb = -3f,
+                speed = 1.25f,
+                pitchSemitones = 3,
+                denoise = DenoiseMode.LIGHT,
+                clarity = true,
+                eqPreset = EqPreset.WARM,
+                compThresholdDb = -20f,
+                compRatio = 4f,
+                compMakeupDb = 2f,
+            )
+            val project = fixture.project.copy(clips = listOf(clip))
+            val exporter = EditorExporter(context, fixture.store)
+
+            runBlocking {
+                exporter.exportToFile(project, project.clips, EditorFormat.WAV, output)
+            }
+
+            val decoded = decode(output)
+            assertEquals(44_100, decoded.sampleRate)
+            assertEquals(2, decoded.channels)
+            val expectedFrames = clip.renderedDurationMs * 44_100L / 1_000L
+            assertTrue(
+                "expected about $expectedFrames frames, got ${decoded.frameCount}",
+                abs(decoded.frameCount - expectedFrames) <= 1_000L,
+            )
+            assertTrue("the all-effects export is silent", decoded.peak() > 0.01f)
+        } finally {
+            fixture.cleanup()
+        }
+    }
+
+    @Test
+    fun everyFormatEncodesOnDevice() {
+        val fixture = Fixture(amplitude = 0.5f, seconds = 1.0)
+        try {
+            EditorFormat.entries.forEach { format ->
+                val output = File(fixture.root, "format-test.${format.extension}")
+                val exporter = EditorExporter(context, fixture.store)
+
+                runBlocking {
+                    exporter.exportToFile(
+                        fixture.project,
+                        fixture.project.clips,
+                        format,
+                        output,
+                    )
+                }
+
+                assertTrue("${format.name} export is missing", output.isFile)
+                assertTrue("${format.name} export is empty", output.length() > 0L)
+                val information = FFprobeKit.getMediaInformation(output.absolutePath)
+                    .mediaInformation
+                val stream = information.streams.orEmpty()
+                    .firstOrNull { it.type == "audio" }
+                assertNotNull("${format.name} has no audio stream", stream)
+                assertEquals(
+                    "${format.name} sample rate",
+                    "44100",
+                    stream!!.sampleRate,
+                )
+                assertEquals(
+                    "${format.name} channels",
+                    2,
+                    stream.getNumberProperty("channels")?.toInt(),
+                )
+                output.delete()
+            }
         } finally {
             fixture.cleanup()
         }

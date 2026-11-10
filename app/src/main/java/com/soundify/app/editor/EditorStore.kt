@@ -51,7 +51,9 @@ class EditorStore(private val root: File) {
         val project = runCatching {
             json.decodeFromString<EditorProject>(file.readText())
         }.getOrNull() ?: return null
-        return if (project.isFutureSchema) project else project.sanitized()
+        // The directory is the identity; never trust a JSON id that disagrees.
+        val normalized = project.copy(id = dir.name)
+        return if (normalized.isFutureSchema) normalized else normalized.sanitized()
     }
 
     fun save(project: EditorProject) {
@@ -60,6 +62,7 @@ class EditorStore(private val root: File) {
 
     fun create(name: String): EditorProject = write(EditorProject(name = name))
 
+    @Synchronized
     fun delete(id: String): Boolean {
         if (id in RESERVED_IDS || id.startsWith(".")) return false
         val dir = resolveChild(id) ?: return false
@@ -67,20 +70,25 @@ class EditorStore(private val root: File) {
         return dir.deleteRecursively()
     }
 
+    @Synchronized
     fun sourceFile(projectId: String, hash: String, extension: String): File {
-        val dir = resolveChild(projectId) ?: throw IllegalArgumentException("Invalid project id")
+        val dir = resolveChild(projectId)?.takeIf { it.isDirectory }
+            ?: throw IllegalArgumentException("Unknown project")
         val sources = File(dir, SOURCES_DIR).apply { mkdirs() }
         return File(sources, "$hash.$extension")
     }
 
+    @Synchronized
     fun peaksFile(projectId: String, hash: String): File {
-        val dir = resolveChild(projectId) ?: throw IllegalArgumentException("Invalid project id")
+        val dir = resolveChild(projectId)?.takeIf { it.isDirectory }
+            ?: throw IllegalArgumentException("Unknown project")
         val peaks = File(dir, PEAKS_DIR).apply { mkdirs() }
         return File(peaks, "$hash.bin")
     }
 
     fun projectDir(id: String): File = File(root, id)
 
+    @Synchronized
     fun registerSource(
         projectId: String,
         temp: File,
@@ -106,6 +114,7 @@ class EditorStore(private val root: File) {
         return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 
+    @Synchronized
     private fun write(project: EditorProject): EditorProject {
         val dir = resolveChild(project.id)
             ?: throw IllegalArgumentException("Invalid project id")
