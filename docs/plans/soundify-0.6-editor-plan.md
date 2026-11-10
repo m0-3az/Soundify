@@ -212,8 +212,10 @@ New:
 - `Waveform.writeCache(file, peaks, durationMs)` atomic via `.tmp` + rename.
 - `Waveform.readCache(file): PeakData?` rejects wrong magic, wrong version,
   impossible bucket counts and truncated files.
-- `Waveform.decode(context, source: File, projectId: String, hash: String,
+- `Waveform.decode(context, source: File, peaksFile: File,
   durationMs: Long): PeakData?`:
+  - the caller passes `store.peaksFile(projectId, hash)`; Waveform does not
+    depend on EditorStore.
   - FFmpeg: `-y -i <src> -ac 1 -ar 8000 -c:a pcm_s16le -f wav <tmp>`
   - read PCM in a streaming loop, bucket, delete tmp, write
     `peaks/<hash>.bin`.
