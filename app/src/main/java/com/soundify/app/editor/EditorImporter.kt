@@ -23,7 +23,7 @@ class EditorImporter(
     private val store: EditorStore,
 ) {
 
-    suspend fun import(uri: Uri, displayName: String?): ImportedSource =
+    suspend fun import(projectId: String, uri: Uri, displayName: String?): ImportedSource =
         withContext(Dispatchers.IO) {
             val cacheRoot = File(context.cacheDir, "editor").apply { mkdirs() }
             val temp = File(cacheRoot, "import.tmp")
@@ -33,7 +33,7 @@ class EditorImporter(
                 temp.delete()
                 throw error
             }
-            val registered = store.registerSource(temp, hash, extensionOf(displayName))
+            val registered = store.registerSource(projectId, temp, hash, extensionOf(displayName))
             val audio = try {
                 probe(registered.file)
             } catch (error: Exception) {

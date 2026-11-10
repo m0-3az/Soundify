@@ -19,8 +19,8 @@ data class RegisteredSource(
 )
 
 /**
- * Persists editor projects under [root]. Sources and peaks are content
- * addressed and shared by every project in the store.
+ * Persists editor projects under [root]. Every project owns its `sources/`
+ * and `peaks/` directories.
  */
 class EditorStore(private val root: File) {
 
@@ -61,21 +61,33 @@ class EditorStore(private val root: File) {
     fun create(name: String): EditorProject = write(EditorProject(name = name))
 
     fun delete(id: String): Boolean {
+        if (id in RESERVED_IDS || id.startsWith(".")) return false
         val dir = resolveChild(id) ?: return false
         if (!dir.isDirectory) return false
         return dir.deleteRecursively()
     }
 
-    fun sourceFile(hash: String, extension: String): File =
-        File(root, SOURCES_DIR).apply { mkdirs() }.let { File(it, "$hash.$extension") }
+    fun sourceFile(projectId: String, hash: String, extension: String): File {
+        val dir = resolveChild(projectId) ?: throw IllegalArgumentException("Invalid project id")
+        val sources = File(dir, SOURCES_DIR).apply { mkdirs() }
+        return File(sources, "$hash.$extension")
+    }
 
-    fun peaksFile(hash: String): File =
-        File(root, PEAKS_DIR).apply { mkdirs() }.let { File(it, "$hash.bin") }
+    fun peaksFile(projectId: String, hash: String): File {
+        val dir = resolveChild(projectId) ?: throw IllegalArgumentException("Invalid project id")
+        val peaks = File(dir, PEAKS_DIR).apply { mkdirs() }
+        return File(peaks, "$hash.bin")
+    }
 
     fun projectDir(id: String): File = File(root, id)
 
-    fun registerSource(temp: File, hash: String, extension: String): RegisteredSource {
-        val destination = sourceFile(hash, extension)
+    fun registerSource(
+        projectId: String,
+        temp: File,
+        hash: String,
+        extension: String,
+    ): RegisteredSource {
+        val destination = sourceFile(projectId, hash, extension)
         if (destination.isFile) {
             temp.delete()
             return RegisteredSource(destination, created = false)
@@ -123,8 +135,8 @@ class EditorStore(private val root: File) {
         if (id.isBlank()) return null
         return runCatching {
             val canonicalRoot = root.canonicalFile
-            val child = File(root, id).canonicalFile
-            if (child.parentFile == canonicalRoot) child else null
+            val child = File(root, id)
+            if (child.canonicalFile.parentFile == canonicalRoot) child else null
         }.getOrNull()
     }
 
@@ -133,5 +145,6 @@ class EditorStore(private val root: File) {
         const val TMP_FILE = "project.json.tmp"
         const val SOURCES_DIR = "sources"
         const val PEAKS_DIR = "peaks"
+        val RESERVED_IDS = setOf(SOURCES_DIR, PEAKS_DIR, PROJECT_FILE)
     }
 }

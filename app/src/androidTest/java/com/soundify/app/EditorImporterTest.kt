@@ -7,7 +7,10 @@ import com.soundify.app.audio.WavWriter
 import com.soundify.app.editor.EditorImporter
 import com.soundify.app.editor.EditorStore
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -30,11 +33,13 @@ class EditorImporterTest {
             }
             val store = EditorStore(root)
             val importer = EditorImporter(context, store)
+            val project = store.create("Import")
+            val sourceDir = File(store.projectDir(project.id), "sources")
 
-            val first = importer.import(Uri.fromFile(wav), "generated.wav")
+            val first = importer.import(project.id, Uri.fromFile(wav), "generated.wav")
 
             assertTrue(first.file.isFile)
-            assertEquals("sources", first.file.parentFile?.name)
+            assertEquals(sourceDir, first.file.parentFile)
             assertTrue(
                 "expected about 2000 ms, got ${first.durationMs}",
                 abs(first.durationMs - 2_000L) <= 50L,
@@ -43,11 +48,22 @@ class EditorImporterTest {
             assertEquals(2, first.channels)
             assertEquals(64, first.hash.length)
 
-            val second = importer.import(Uri.fromFile(wav), "generated.wav")
+            val second = importer.import(project.id, Uri.fromFile(wav), "generated.wav")
 
             assertEquals(first.hash, second.hash)
             assertEquals(first.file, second.file)
-            assertEquals(1, File(root, "sources").listFiles()!!.count { it.isFile })
+            assertEquals(1, sourceDir.listFiles()!!.count { it.isFile })
+
+            val otherProject = store.create("Other import")
+            val other = importer.import(otherProject.id, Uri.fromFile(wav), "generated.wav")
+            val otherSourceDir = File(store.projectDir(otherProject.id), "sources")
+
+            assertEquals(first.hash, other.hash)
+            assertNotEquals(first.file, other.file)
+            assertEquals(otherSourceDir, other.file.parentFile)
+            assertEquals(1, otherSourceDir.listFiles()!!.count { it.isFile })
+            assertArrayEquals(first.file.readBytes(), other.file.readBytes())
+            assertFalse(File(root, "sources").exists())
         } finally {
             wav.delete()
             root.deleteRecursively()
@@ -63,16 +79,19 @@ class EditorImporterTest {
             bad.writeText("not audio")
             val store = EditorStore(root)
             val importer = EditorImporter(context, store)
+            val project = store.create("Invalid import")
+            val sourceDir = File(store.projectDir(project.id), "sources")
 
             val error = try {
-                importer.import(Uri.fromFile(bad), "bad.wav")
+                importer.import(project.id, Uri.fromFile(bad), "bad.wav")
                 null
             } catch (expected: IllegalStateException) {
                 expected
             }
 
             assertEquals("This file has no readable audio track.", error?.message)
-            assertTrue(File(root, "sources").listFiles().isNullOrEmpty())
+            assertTrue(sourceDir.listFiles().isNullOrEmpty())
+            assertTrue(store.projectDir(project.id).isDirectory)
         } finally {
             bad.delete()
             root.deleteRecursively()

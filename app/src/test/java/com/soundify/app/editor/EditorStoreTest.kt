@@ -89,12 +89,16 @@ class EditorStoreTest {
     }
 
     @Test
-    fun deleteRefusesTraversalBlankAndTheRootItself() {
+    fun deleteRefusesTraversalBlankReservedNamesAndTheRootItself() {
         val root = root()
         val outside = createTempDirectory("editor-outside").toFile()
         try {
             val store = EditorStore(root)
             val keep = File(outside, "keep.txt").apply { writeText("keep") }
+            val sources = File(root, "sources").apply { mkdirs() }
+            val peaks = File(root, "peaks").apply { mkdirs() }
+            val projectJson = File(root, "project.json").apply { writeText("{}") }
+            val hidden = File(root, ".hidden").apply { mkdirs() }
 
             assertFalse(store.delete("../${outside.name}"))
             assertFalse(store.delete("/"))
@@ -102,8 +106,16 @@ class EditorStoreTest {
             assertFalse(store.delete("   "))
             assertFalse(store.delete("."))
             assertFalse(store.delete(root.absolutePath))
+            assertFalse(store.delete("sources"))
+            assertFalse(store.delete("peaks"))
+            assertFalse(store.delete("project.json"))
+            assertFalse(store.delete(".hidden"))
             assertTrue(outside.isDirectory)
             assertTrue(keep.isFile)
+            assertTrue(sources.isDirectory)
+            assertTrue(peaks.isDirectory)
+            assertTrue(projectJson.isFile)
+            assertTrue(hidden.isDirectory)
         } finally {
             root.deleteRecursively()
             outside.deleteRecursively()
@@ -115,31 +127,51 @@ class EditorStoreTest {
         val root = root()
         try {
             val store = EditorStore(root)
+            val incoming = File(root, "incoming").apply { mkdirs() }
             val keep = store.create("Keep")
             val drop = store.create("Drop")
+            val keepSource = store.registerSource(
+                keep.id,
+                File(incoming, "keep.tmp").apply { writeText("keep audio") },
+                "keep-hash",
+                "wav",
+            )
+            val dropSource = store.registerSource(
+                drop.id,
+                File(incoming, "drop.tmp").apply { writeText("drop audio") },
+                "drop-hash",
+                "wav",
+            )
+            val keepPeaks = store.peaksFile(keep.id, "keep-hash").apply { writeBytes(byteArrayOf(1)) }
+            val dropPeaks = store.peaksFile(drop.id, "drop-hash").apply { writeBytes(byteArrayOf(2)) }
 
             assertTrue(store.delete(drop.id))
 
             assertNull(store.load(drop.id))
             assertNotNull(store.load(keep.id))
             assertFalse(store.projectDir(drop.id).exists())
+            assertFalse(dropSource.file.exists())
+            assertFalse(dropPeaks.exists())
             assertTrue(store.projectDir(keep.id).isDirectory)
+            assertTrue(keepSource.file.isFile)
+            assertTrue(keepPeaks.isFile)
         } finally {
             root.deleteRecursively()
         }
     }
 
     @Test
-    fun registerSourceDeduplicatesIdenticalHashesAndKeepsOneFile() {
+    fun registerSourceDeduplicatesIdenticalHashesWithinAProject() {
         val root = root()
         try {
             val store = EditorStore(root)
+            val project = store.create("Project")
             val incoming = File(root, "incoming").apply { mkdirs() }
             val first = File(incoming, "first.tmp").apply { writeText("audio bytes") }
             val second = File(incoming, "second.tmp").apply { writeText("audio bytes") }
 
-            val created = store.registerSource(first, "abc123", "wav")
-            val deduped = store.registerSource(second, "abc123", "wav")
+            val created = store.registerSource(project.id, first, "abc123", "wav")
+            val deduped = store.registerSource(project.id, second, "abc123", "wav")
 
             assertTrue(created.created)
             assertFalse(deduped.created)
@@ -148,7 +180,45 @@ class EditorStoreTest {
             assertEquals("audio bytes", created.file.readText())
             assertFalse(first.exists())
             assertFalse(second.exists())
-            assertEquals(1, File(root, "sources").listFiles()!!.count { it.isFile })
+            val sourceDir = File(store.projectDir(project.id), "sources")
+            assertEquals(sourceDir, created.file.parentFile)
+            assertEquals(1, sourceDir.listFiles()!!.count { it.isFile })
+
+            val other = store.create("Other")
+            val third = File(incoming, "third.tmp").apply { writeText("audio bytes") }
+            val otherCopy = store.registerSource(other.id, third, "abc123", "wav")
+
+            assertTrue(otherCopy.created)
+            assertFalse(created.file == otherCopy.file)
+            assertTrue(otherCopy.file.isFile)
+            assertEquals(File(store.projectDir(other.id), "sources"), otherCopy.file.parentFile)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun bytesOfIncludesProjectSourcesAndPeaks() {
+        val root = root()
+        try {
+            val store = EditorStore(root)
+            val project = store.create("Bytes")
+            val incoming = File(root, "incoming").apply { mkdirs() }
+            val source = store.registerSource(
+                project.id,
+                File(incoming, "audio.tmp").apply { writeText("0123456789") },
+                "bytes-hash",
+                "wav",
+            )
+            val peaks = store.peaksFile(project.id, "bytes-hash").apply {
+                writeBytes(ByteArray(7))
+            }
+            val projectJson = File(store.projectDir(project.id), "project.json")
+
+            assertEquals(
+                projectJson.length() + source.file.length() + peaks.length(),
+                store.bytesOf(project.id),
+            )
         } finally {
             root.deleteRecursively()
         }
