@@ -189,7 +189,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Clean Video") },
+                title = { Text("Clean Media") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -197,7 +197,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                 },
                 actions = {
                     IconButton(onClick = { showHistory = true }) {
-                        Icon(Icons.Default.History, contentDescription = "Clean Video history")
+                        Icon(Icons.Default.History, contentDescription = "Clean Media history")
                     }
                 },
             )
@@ -213,16 +213,16 @@ fun CleanVideoScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Remove music from a video while keeping voice and sound effects. " +
-                    "Everything runs on this device; no internet is used.",
+                "Remove music from an audio or video file while keeping voice and " +
+                    "sound effects. Everything runs on this device; no internet is used.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Button(
-                onClick = { picker.launch(arrayOf("video/*")) },
+                onClick = { picker.launch(arrayOf("audio/*", "video/*")) },
                 enabled = !processing && !isSaving,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (uri == null) "Choose video" else "Choose another video")
+                Text(if (uri == null) "Choose audio or video" else "Choose another file")
             }
 
             name?.let {
@@ -240,7 +240,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
                     onClick = viewModel::clean,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Clean video")
+                    Text("Clean")
                 }
             }
 
@@ -301,6 +301,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
         SaveSheet(
             result = output,
             selected = selectedStem,
+            hasVideo = output.hasVideo,
             onDismiss = { saveSheetOpen = false },
             onAudio = { format ->
                 saveSheetOpen = false
@@ -328,7 +329,7 @@ fun CleanVideoScreen(onBack: () -> Unit) {
             text = {
                 Text(
                     "You already cleaned ${entry.displayName}. Open that result instead " +
-                        "of processing the video again?"
+                        "of processing the file again?"
                 )
             },
             confirmButton = {
@@ -661,6 +662,7 @@ private fun StemRow(
 private fun SaveSheet(
     result: CleanVideoResult,
     selected: CleanStem,
+    hasVideo: Boolean,
     onDismiss: () -> Unit,
     onAudio: (AudioFormat) -> Unit,
     onVideo: (VideoFormat) -> Unit,
@@ -685,7 +687,17 @@ private fun SaveSheet(
             when (kind) {
                 null -> {
                     ChoiceRow("Audio", "WAV, FLAC, MP3 or M4A") { kind = SaveKind.AUDIO }
-                    ChoiceRow("Video", "Put this audio back into the video") { kind = SaveKind.VIDEO }
+                    if (hasVideo) {
+                        ChoiceRow("Video", "Put this audio back into the video") {
+                            kind = SaveKind.VIDEO
+                        }
+                    } else {
+                        Text(
+                            "This file has no video track, so only audio can be saved.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 SaveKind.AUDIO -> {

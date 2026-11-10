@@ -34,6 +34,8 @@ data class CleanVideoHistoryEntry(
     val totalBytes: Long,
     val sourceUri: String? = null,
     val appVersion: String = "",
+    /** Old history files predate audio input; they are all video results. */
+    val hasVideo: Boolean = true,
 )
 
 /**
@@ -150,6 +152,7 @@ class CleanVideoHistoryStore(private val root: File) {
                 totalBytes = result.stems.sumOf { it.file.length() },
                 sourceUri = result.sourceUri.toString(),
                 appVersion = appVersion,
+                hasVideo = result.hasVideo,
             )
         }
     }

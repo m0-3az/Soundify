@@ -1,12 +1,16 @@
 package com.soundify.app
 
+import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.soundify.app.cleanvideo.CleanStem
 import com.soundify.app.cleanvideo.CleanVideoHistoryEntry
 import com.soundify.app.cleanvideo.CleanVideoHistoryStore
 import com.soundify.app.cleanvideo.CleanVideoHistoryStem
+import com.soundify.app.cleanvideo.CleanVideoResult
 import com.soundify.app.cleanvideo.CleanVideoStorage
+import com.soundify.app.cleanvideo.StemResult
 import com.soundify.app.cleanvideo.VideoFingerprint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -46,6 +50,40 @@ class CleanVideoHistoryAndroidTest {
         } finally {
             dir.deleteRecursively()
             CleanVideoHistoryStore(root).delete(id)
+        }
+    }
+
+    @Test
+    fun entryForKeepsAnAudioOnlyResultAudioOnly() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = CleanVideoStorage.exportRoot(context)
+        val id = "entry-for-test-${System.currentTimeMillis()}"
+        val dir = File(root, id).apply { mkdirs() }
+        fun stem(kind: CleanStem) = StemResult(
+            kind = kind,
+            file = File(dir, "${kind.name.lowercase()}.wav").apply { writeText("x") },
+            durationMs = 1_000,
+            rmsDb = -18f,
+            peakDb = -2f,
+        )
+        val result = CleanVideoResult(
+            voice = stem(CleanStem.VOICE),
+            sfx = stem(CleanStem.SFX),
+            music = stem(CleanStem.MUSIC),
+            clean = stem(CleanStem.CLEAN),
+            sourceUri = Uri.parse("content://media/audio/$id"),
+            sourceName = "song.mp3",
+            videoCodec = null,
+            videoDurationMs = 1_000,
+            hasVideo = false,
+        )
+        try {
+            val entry = CleanVideoHistoryStore.entryFor(result, "fp-$id", "0.5.0")
+
+            assertEquals(id, entry.id)
+            assertFalse(entry.hasVideo)
+        } finally {
+            dir.deleteRecursively()
         }
     }
 

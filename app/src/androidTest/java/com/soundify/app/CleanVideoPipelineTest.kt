@@ -59,7 +59,7 @@ class CleanVideoPipelineTest {
             }.exceptionOrNull()
 
             assertTrue("expected a clear no-audio failure, got $error", error is IllegalStateException)
-            assertEquals("This video has no audio track.", error?.message)
+            assertEquals("This file has no audio track.", error?.message)
             assertEquals("a failed run left a stem directory", before, exportNames(exports))
         } finally {
             withAudio.delete()
@@ -239,7 +239,7 @@ class CleanVideoPipelineTest {
     }
 
     private fun assertProgressOrder(details: List<String>) {
-        val copy = details.indexOfFirst { it.contains("Copying the video") }
+        val copy = details.indexOfFirst { it.contains("Copying the file") }
         val extract = details.indexOfFirst { it.contains("Extracting audio") }
         val loudness = details.indexOfFirst { it.contains("Matching loudness") }
         val done = details.indexOfFirst { it == "Done" }

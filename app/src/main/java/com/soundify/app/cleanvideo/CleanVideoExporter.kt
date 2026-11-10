@@ -95,6 +95,7 @@ class CleanVideoExporter(private val context: Context) {
         format: VideoFormat,
         target: Uri,
     ) = withContext(Dispatchers.IO) {
+        require(result.hasVideo) { "This file has no video track." }
         require(VideoCompatibility.supports(format, result.videoCodec)) {
             "${format.label} cannot hold ${result.videoCodec ?: "this"} video"
         }

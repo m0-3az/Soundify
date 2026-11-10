@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.SystemClock
 import com.arthenica.ffmpegkit.FFprobeKit
+import com.arthenica.ffmpegkit.StreamInformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -65,6 +66,8 @@ data class CleanVideoResult(
     val videoDurationMs: Long,
     /** Set when loudness matching was skipped, e.g. a near-silent clean mix. */
     val cleanNote: String? = null,
+    /** False for audio-only sources, including audio with embedded cover art. */
+    val hasVideo: Boolean = true,
 ) {
     fun stem(kind: CleanStem): StemResult = when (kind) {
         CleanStem.VOICE -> voice
@@ -113,14 +116,14 @@ class StreamingCleaner(private val context: Context) {
                 ?.takeIf { it.matches(Regex("[a-z0-9]{1,5}")) }
                 ?: "mp4"
             val input = File(work, "input.$inputExt")
-            onProgress(CleanProgress(0.01f, CleanStage.PREPARING, "Copying the video…"))
+            onProgress(CleanProgress(0.01f, CleanStage.PREPARING, "Copying the file…"))
             context.contentResolver.openInputStream(uri)?.use { stream ->
                 input.outputStream().use { stream.copyTo(it) }
-            } ?: error("Could not open the selected video")
+            } ?: error("Could not open the selected file")
 
             val probe = probeVideo(input)
             if (!probe.hasAudio) {
-                throw IllegalStateException("This video has no audio track.")
+                throw IllegalStateException("This file has no audio track.")
             }
 
             val audio = File(work, "audio.wav")
@@ -244,6 +247,7 @@ class StreamingCleaner(private val context: Context) {
                 videoCodec = probe.videoCodec,
                 videoDurationMs = probe.durationMs.takeIf { it > 0L } ?: durationMs,
                 cleanNote = normalization.detail.takeIf { !normalization.applied },
+                hasVideo = probe.hasVideo,
             )
 
             onProgress(CleanProgress(1f, CleanStage.DONE, "Done"))
@@ -264,21 +268,38 @@ class StreamingCleaner(private val context: Context) {
         return "%d:%02d".format(total / 60, total % 60)
     }
 
-    private data class VideoProbe(
-        val videoCodec: String?,
-        val hasAudio: Boolean,
-        val durationMs: Long,
-    )
-
-    private fun probeVideo(file: File): VideoProbe {
+    internal fun probeVideo(file: File): MediaProbe {
         val info = runCatching {
             FFprobeKit.getMediaInformation(file.absolutePath).mediaInformation
-        }.getOrNull() ?: return VideoProbe(null, hasAudio = true, durationMs = 0L)
-        val video = info.streams?.firstOrNull { it.type == "video" }
-        val hasAudio = info.streams?.any { it.type == "audio" } ?: true
+        }.getOrNull() ?: return MediaProbe(
+            hasVideo = true,
+            hasAudio = true,
+            videoCodec = null,
+            durationMs = 0L,
+        )
         val durationMs = info.duration?.toDoubleOrNull()?.let { (it * 1000.0).toLong() } ?: 0L
-        return VideoProbe(video?.codec, hasAudio, durationMs)
+        val streams = info.streams ?: return MediaProbe(
+            hasVideo = true,
+            hasAudio = true,
+            videoCodec = null,
+            durationMs = durationMs,
+        )
+        return MediaProbe.classify(
+            streams.map { stream ->
+                MediaStreamInfo(
+                    type = stream.type,
+                    codec = stream.codec,
+                    attachedPic = stream.isAttachedPic(),
+                )
+            },
+            durationMs,
+        )
     }
+
+    private fun StreamInformation.isAttachedPic(): Boolean =
+        runCatching {
+            getProperty("disposition")?.optInt("attached_pic", 0) == 1
+        }.getOrDefault(false)
 
     private fun ensureModel(): File {
         val model = File(context.filesDir, "mrx_mask.onnx")

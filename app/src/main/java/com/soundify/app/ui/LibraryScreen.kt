@@ -202,9 +202,9 @@ private fun CleanVideoCard(onClick: () -> Unit) {
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text("Clean Video", style = MaterialTheme.typography.titleMedium)
+                Text("Clean Media", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Remove music, keep voice and sound effects",
+                    "Remove music from audio or video",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

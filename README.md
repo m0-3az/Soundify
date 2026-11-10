@@ -1,16 +1,17 @@
 # Soundify
 
-**Bring your stems. Mix them anywhere. Or remove the music from a video.**
+**Bring your stems. Mix them anywhere. Or remove the music from a video or audio file.**
 
 Soundify is a free, offline Android app with two modes:
 
 - **Stem Mixer** — play 2–8 stems you already have, with gain, pan, mute, solo,
   offset, looping and WAV export.
-- **Clean Video (beta)** — pick a video, remove its music on-device, keep voice
-  and sound effects, then export cleaned audio (MP3 or M4A) or a cleaned video
-  with the original video stream copied.
+- **Clean Media (beta)** — pick an audio or video file, remove its music
+  on-device, keep voice and sound effects, then export cleaned audio (MP3 or
+  M4A) or, when the source has a video track, a cleaned video with the original
+  video stream copied.
 
-Clean Video uses a bundled on-device model. The app does **not** request the
+Clean Media uses a bundled on-device model. The app does **not** request the
 `INTERNET` permission, and no audio or video leaves the phone.
 
 ## Download
@@ -27,10 +28,10 @@ page. The release APK includes the separation model.
 ## Status
 
 - Stem Mixer: MVP complete and verified on a physical phone.
-- Clean Video: beta. End-to-end on-device tests pass for 12 s and 60 s clips.
+- Clean Media: beta. End-to-end on-device tests pass for 12 s and 60 s clips.
   A 20-minute video is processed in roughly 29 minutes on a Samsung SM-A576B;
   the pipeline streams chunks and writes stems to disk, so memory stays bounded.
-- Open issues: separation quality varies by mix, and Clean Video currently
+- Open issues: separation quality varies by mix, and Clean Media currently
   exports a cleaned mix rather than an interactive three-stem mixer.
 
 ## Features
@@ -48,9 +49,9 @@ page. The release APK includes the separation model.
 - Local project library with saved mix state
 - WAV export (16-bit PCM)
 
-### Clean Video
+### Clean Media
 
-- Import any video through the system file picker
+- Import any audio or video file through the system file picker
 - Extract audio at its original level to 44.1 kHz stereo float
 - Separate music / voice / sound effects with the bundled MRX model
 - Match the cleaned mix to -16 LUFS / -1.5 dBTP after separation; near-silent
@@ -61,10 +62,11 @@ page. The release APK includes the separation model.
 - Cancelling or failing removes the partial stem files automatically
 - **Delete stems** removes the four outputs from the app without touching files you saved
 - Save one track as WAV, FLAC, MP3 or M4A through the system document picker
-- Put a track back into the video, copying the original video stream
+- Put a track back into the video, copying the original video stream; video
+  saves are hidden for audio-only sources, including audio with cover art
 - MP4 is offered only for H.264/HEVC/AV1/MPEG-4 video; MKV is the fallback for
   other codecs (VP8/VP9, MPEG-2, Theora, unknown) and WebM only for VP8/VP9/AV1
-- Clear errors for videos without an audio track and for FFmpeg failures
+- Clear errors for files without an audio track and for FFmpeg failures
 
 ## Why
 
@@ -75,7 +77,7 @@ page. The release APK includes the separation model.
 
 ## Limitations
 
-- Clean Video quality depends on the mix. Music with vocals, heavy compression,
+- Clean Media quality depends on the mix. Music with vocals, heavy compression,
   or loud sound effects can bleed between stems.
 - Near-silent clean mixes are kept at their existing level instead of being
   amplified into separation noise; the result screen explains why.
@@ -150,12 +152,14 @@ Or copy the APK to a device and open it.
 5. Toggle **Loop** to repeat a section.
 6. Tap **Export WAV** to render the current mix.
 
-### Clean Video
+### Clean Media
 
-1. On the library screen, tap **Clean Video**.
-2. Choose a video. Videos without an audio track are rejected with a clear message.
-3. Tap **Clean video** and keep the app open.
-4. Play the cleaned result, then share the MP3, M4A or cleaned video.
+1. On the library screen, tap **Clean Media**.
+2. Choose an audio or video file. Files without an audio track are rejected with
+   a clear message.
+3. Tap **Clean** and keep the app open.
+4. Play the cleaned result, then save the MP3, M4A or, for a video source, the
+   cleaned video.
 5. Tap **Delete stems** to remove the four outputs from the app. Files you saved
    to another folder are kept. Cancelling a run also removes its partial stems.
 

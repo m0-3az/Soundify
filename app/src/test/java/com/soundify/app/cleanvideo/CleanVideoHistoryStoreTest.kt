@@ -18,6 +18,7 @@ class CleanVideoHistoryStoreTest {
         fingerprint: String = "fp-$id",
         createdAt: Long = 1_000L,
         bytes: Long = 100L,
+        hasVideo: Boolean = true,
     ) = CleanVideoHistoryEntry(
         id = id,
         fingerprint = fingerprint,
@@ -32,6 +33,7 @@ class CleanVideoHistoryStoreTest {
         totalBytes = bytes,
         sourceUri = "content://media/$id",
         appVersion = "0.4.0",
+        hasVideo = hasVideo,
     )
 
     @Test
@@ -130,6 +132,51 @@ class CleanVideoHistoryStoreTest {
         } finally {
             root.deleteRecursively()
             outside.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun audioOnlyEntriesRoundTripWithHasVideoFalse() {
+        val root = createTempDirectory("history").toFile()
+        try {
+            val store = storeIn(root)
+            store.save(entry("audio", hasVideo = false))
+
+            assertFalse(store.list().single().hasVideo)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun legacyEntriesWithoutHasVideoDecodeAsVideo() {
+        val root = createTempDirectory("history").toFile()
+        try {
+            File(root, "history.json").writeText(
+                """
+                [
+                  {
+                    "id": "legacy",
+                    "fingerprint": "fp-legacy",
+                    "displayName": "legacy.mp4",
+                    "createdAt": 1000,
+                    "durationMs": 12000,
+                    "videoCodec": "h264",
+                    "stems": [],
+                    "totalBytes": 100,
+                    "sourceUri": "content://media/legacy",
+                    "appVersion": "0.4.0"
+                  }
+                ]
+                """.trimIndent(),
+            )
+
+            val entry = storeIn(root).list().single()
+
+            assertEquals("legacy", entry.id)
+            assertTrue(entry.hasVideo)
+        } finally {
+            root.deleteRecursively()
         }
     }
 

@@ -278,6 +278,7 @@ class CleanVideoViewModel(application: Application) : AndroidViewModel(applicati
             videoCodec = entry.videoCodec,
             videoDurationMs = entry.durationMs,
             cleanNote = entry.cleanNote,
+            hasVideo = entry.hasVideo,
         )
     }
 
