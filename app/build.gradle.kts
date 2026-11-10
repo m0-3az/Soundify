@@ -5,6 +5,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// Release signing is read from the environment so no key or password is
+// committed. See docs/releases/README.md for the required variables.
+val releaseKeystoreFile = System.getenv("SOUNDIFY_KEYSTORE")
+    ?.let { File(it) }
+    ?.takeIf { it.isFile }
+val releaseStorePassword = System.getenv("SOUNDIFY_KEYSTORE_PASSWORD_FILE")
+    ?.let { File(it) }
+    ?.takeIf { it.isFile }
+    ?.readText()
+    ?.trim()
+val releaseKeyPassword = System.getenv("SOUNDIFY_KEY_PASSWORD_FILE")
+    ?.let { File(it) }
+    ?.takeIf { it.isFile }
+    ?.readText()
+    ?.trim()
+    ?: releaseStorePassword
+val releaseKeyAlias = System.getenv("SOUNDIFY_KEY_ALIAS") ?: "soundify"
+val releaseSigningReady = releaseKeystoreFile != null && !releaseStorePassword.isNullOrEmpty()
+
 android {
     namespace = "com.soundify.app"
     compileSdk = 35
@@ -13,16 +32,32 @@ android {
         applicationId = "com.soundify.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 6
+        versionName = "0.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (releaseSigningReady && releaseKeystoreFile != null && releaseStorePassword != null) {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword ?: releaseStorePassword
+            }
+        }
     }
 
     buildTypes {
         release {
-            // Personal build: reuse the debug signing key so the release APK
-            // updates over the debug build already installed on the phone.
-            signingConfig = signingConfigs.getByName("debug")
+            // Public APKs use the release key. Without the environment
+            // variables the release build is left unsigned instead of silently
+            // falling back to a debug key that cannot update a published app.
+            signingConfig = if (releaseSigningReady) {
+                signingConfigs.getByName("release")
+            } else {
+                null
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

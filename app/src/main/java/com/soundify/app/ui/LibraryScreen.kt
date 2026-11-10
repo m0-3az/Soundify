@@ -239,7 +239,7 @@ private fun AudioEditorCard(onClick: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Audio editor", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Trim, merge, convert and record audio",
+                    "Trim, split, fade and export audio",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

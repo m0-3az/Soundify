@@ -13,3 +13,10 @@ Spike/
 
 # 117 MB model: included in release APKs; see README for source builds
 app/src/main/assets/mrx_mask.onnx
+
+# Release signing material must never be committed
+*.jks
+*.keystore
+storepass.txt
+keypass.txt
+release-signing.properties

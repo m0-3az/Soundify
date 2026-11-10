@@ -2,7 +2,7 @@
 
 **Bring your stems. Mix them anywhere. Or remove the music from a video or audio file.**
 
-Soundify is a free, offline Android app with two modes:
+Soundify is a free, offline Android app with three modes:
 
 - **Stem Mixer** — play 2–8 stems you already have, with gain, pan, mute, solo,
   offset, looping and WAV export.
@@ -10,6 +10,9 @@ Soundify is a free, offline Android app with two modes:
   on-device, keep voice and sound effects, then export cleaned audio (MP3 or
   M4A) or, when the source has a video track, a cleaned video with the original
   video stream copied.
+- **Audio editor** — import one audio file, trim it on a waveform, split it,
+  fade it, set clip volume, reorder clips and export a new file without ever
+  modifying the original.
 
 Clean Media uses a bundled on-device model. The app does **not** request the
 `INTERNET` permission, and no audio or video leaves the phone.
@@ -18,6 +21,19 @@ Clean Media uses a bundled on-device model. The app does **not** request the
 
 Get the latest APK from the [Releases](https://github.com/m0-3az/Soundify/releases)
 page. The release APK includes the separation model.
+
+Release APKs are signed with a dedicated release key. Builds from before
+0.6.0 used the debug key, so upgrading from one of those requires a one-time
+uninstall (app data is removed).
+
+### Update with Obtainium
+
+1. Install [Obtainium](https://github.com/ImranR98/Obtainium).
+2. Add the repository URL: `https://github.com/m0-3az/Soundify`.
+3. Enable update notifications for the app.
+
+Obtainium checks GitHub Releases; Soundify itself stays offline and has no
+network permission. Updates still require the Android install confirmation.
 
 ## Screenshots
 
@@ -31,6 +47,9 @@ page. The release APK includes the separation model.
 - Clean Media: beta. End-to-end on-device tests pass for 12 s and 60 s clips.
   A 20-minute video is processed in roughly 29 minutes on a Samsung SM-A576B;
   the pipeline streams chunks and writes stems to disk, so memory stays bounded.
+- Audio editor: 0.6.0. Import, trim, split, fade, volume, clip reorder,
+  preview and WAV/FLAC/MP3/M4A export are implemented and covered by 187 JVM
+  and 49 device tests.
 - Open issues: separation quality varies by mix, and Clean Media currently
   exports a cleaned mix rather than an interactive three-stem mixer.
 
@@ -68,6 +87,20 @@ page. The release APK includes the separation model.
   other codecs (VP8/VP9, MPEG-2, Theora, unknown) and WebM only for VP8/VP9/AV1
 - Clear errors for files without an audio track and for FFmpeg failures
 
+### Audio editor
+
+- Import one audio file through the system picker; the app keeps its own copy
+  and never modifies the picked original
+- Waveform view with draggable trim handles and exact millisecond fields
+- Split at the playhead, fade in/out, and per-clip volume from −24 to +24 dB
+- Clip list: add, reorder, select and delete clips; undo/redo (50 steps)
+- Preview playback with trim-end stop, seek and a project timeline
+- Export WAV, FLAC, MP3 or M4A at 44.1 kHz stereo through the system document
+  picker, with progress and Cancel
+- Fades, crossfade and effects are applied on export; preview is approximate
+- Future-schema projects open read-only so a newer version's data is not
+  rewritten
+
 ## Why
 
 - **Free:** no ads, subscriptions, accounts or in-app purchases.
@@ -83,8 +116,8 @@ page. The release APK includes the separation model.
   amplified into separation noise; the result screen explains why.
 - A 20-minute video takes roughly 29 minutes on the tested phone. Processing
   continues in the background with a notification.
-- The release APK is currently signed with the debug key (personal build). Future
-  releases must keep the same signing key to update in place.
+- The Audio editor is single-track and clip-based, not a multi-track timeline.
+  Recording, merge, batch convert and real-time effects are later releases.
 - Stem Mixer requires all stems in a project to share the same sample rate.
 - MP3/AAC stems may need a manual offset because of encoder delay.
 
@@ -115,13 +148,26 @@ The APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-For a release build:
+For a release build, provide the signing material through environment
+variables (never commit it):
 
 ```bash
+export SOUNDIFY_KEYSTORE=/path/to/soundify-release.jks
+export SOUNDIFY_KEYSTORE_PASSWORD_FILE=/path/to/storepass.txt
+export SOUNDIFY_KEY_PASSWORD_FILE=/path/to/storepass.txt
+export SOUNDIFY_KEY_ALIAS=soundify
 ./gradlew assembleRelease
 ```
 
-The release APK is signed with the local debug key for now.
+The signed APK is written to:
+
+```
+app/build/outputs/apk/release/app-release.apk
+```
+
+Without those variables the release build is unsigned, so a debug key can
+never silently ship. See [docs/releases/README.md](docs/releases/README.md) for
+the full release checklist.
 
 ## Test
 
@@ -136,10 +182,12 @@ separation pipeline is exercised without copyrighted sample media.
 ## Install
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-Or copy the APK to a device and open it.
+Or copy the APK to a device and open it. A build signed with the release key
+cannot update a debug-signed build; uninstall the old app once. After that,
+every release keeps the same key and updates in place.
 
 ## Usage
 
@@ -167,6 +215,20 @@ The result screen shows the levels you will get when saving: voice, sound
 effects and music are restored by +6 dB on export, while the clean mix is
 already normalized.
 
+### Audio editor
+
+1. On the library screen, tap **Audio editor**.
+2. Tap **New edit** and choose one audio file. The app copies it; the original
+   is never modified.
+3. Drag the waveform handles or type exact start/end milliseconds.
+4. Use **Split** at the playhead, **Fade** and **Volume** on the selected clip.
+5. Add more clips, reorder them, and select a clip from the list to edit it.
+6. Tap **Save audio**, choose a format and name, then pick a destination.
+7. Tap **Export**; progress and Cancel stay visible while it runs.
+
+Exports are always 44.1 kHz stereo. Fades, crossfade and effects are applied on
+export; preview is approximate. Deleting an edit removes only the app's copy.
+
 ## Project structure
 
 ```
@@ -174,6 +236,7 @@ app/src/main/java/com/soundify/app/
   data/         Project and stem models, local store, role mapping
   audio/        MediaCodec decoders, ring buffer, mixer, WAV writer
   cleanvideo/   STFT/iSTFT, ONNX mask model, streaming cleaner, FFmpeg
+  editor/       Editor model/store/importer, waveform, player, exporter
   ui/           Compose screens and theme
 ```
 
