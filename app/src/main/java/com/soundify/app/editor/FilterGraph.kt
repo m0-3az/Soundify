@@ -12,16 +12,18 @@ data class FilterPlan(
     val outputLabel: String = FilterGraph.OUTPUT_LABEL,
     val expectedDurationMs: Long,
     val outputArgs: String,
+    /** Sanitized clips rendered by the graph, in branch order. */
+    val inputClips: List<EditorClip>,
 )
 
 /**
  * Pure builder for the FFmpeg filter graph of an editor export.
  *
  * [build] sanitizes the project first, so invalid values never reach FFmpeg.
- * Branch `i` reads input `[i:a]`, so the caller must pass the source files of
- * `clips` as inputs `0..n-1` in the same order. A single clip skips the join
- * and its crossfade is ignored; multiple clips are joined with each later
- * clip's (capped) crossfade.
+ * Branch `i` reads input `[i:a]` and renders `FilterPlan.inputClips[i]`, so the
+ * caller must pass `FilterPlan.inputClips` as inputs `0..n-1` in that order.
+ * A single clip skips the join and its crossfade is ignored; multiple clips
+ * are joined with each later clip's (capped) crossfade.
  */
 object FilterGraph {
 
@@ -50,6 +52,7 @@ object FilterGraph {
             expectedDurationMs = (ordered.sumOf { it.renderedDurationMs } - crossfades.sum())
                 .coerceAtLeast(0L),
             outputArgs = outputArgs(format),
+            inputClips = ordered,
         )
     }
 

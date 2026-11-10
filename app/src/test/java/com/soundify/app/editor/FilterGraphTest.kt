@@ -519,6 +519,7 @@ class FilterGraphTest {
             ),
             plan.filterComplex,
         )
+        assertEquals(listOf(second, first), plan.inputClips)
         assertEquals(2_000L, plan.expectedDurationMs)
     }
 
@@ -558,12 +559,14 @@ class FilterGraphTest {
 
     @Test
     fun clipsDroppedBySanitizationAreDroppedFromTheGraph() {
-        val good = clip(id = "good", sourceHash = "good")
+        val good = clip(id = "good", sourceHash = "good", trimStartMs = 500L, trimEndMs = 1_500L)
         val blank = clip(id = "blank", sourceHash = " ")
         val plan = planOf(project(good, blank), listOf(blank, good))
 
-        assertEquals(graph(chain()), plan.filterComplex)
-        assertEquals(2_000L, plan.expectedDurationMs)
+        assertEquals(listOf(good), plan.inputClips)
+        assertEquals(graph(chain(trimStart = "0.500", trimEnd = "1.500")), plan.filterComplex)
+        assertFalse(plan.filterComplex.contains("start=0.000:end=2.000"))
+        assertEquals(1_000L, plan.expectedDurationMs)
     }
 
     @Test
