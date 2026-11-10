@@ -1,7 +1,9 @@
 package com.soundify.app.cleanvideo
 
 import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.Statistics
 import java.io.File
 
 object Ffmpeg {
@@ -15,13 +17,38 @@ object Ffmpeg {
         return log
     }
 
+    /**
+     * Non-blocking variant used by the editor export. [onComplete] receives
+     * the success flag and the complete FFmpeg log; progress arrives through
+     * [onStatistics] on FFmpeg's own callback thread.
+     */
+    fun runAsync(
+        command: String,
+        onStatistics: (Statistics) -> Unit,
+        onComplete: (Boolean, String) -> Unit,
+    ): FFmpegSession = FFmpegKit.executeAsync(
+        command,
+        { session ->
+            onComplete(ReturnCode.isSuccess(session.returnCode), session.output ?: "")
+        },
+        { _ -> },
+        { statistics -> onStatistics(statistics) },
+    )
+
     fun quote(file: File): String = "\"${file.absolutePath.replace("\"", "\\\"")}\""
 
-    private fun friendlyMessage(code: String, log: String): String {
+    internal fun friendlyMessage(code: String, log: String): String {
         val lower = log.lowercase()
         val reason = when {
             "no space left" in lower ->
                 "Not enough storage to finish. Free some space and try again."
+
+            "received signal 2" in lower || "cancelled" in lower || "canceled" in lower ->
+                "Export was cancelled."
+
+            "does not contain any stream" in lower || "matches no streams" in lower ||
+                "no audio" in lower ->
+                "This file has no readable audio track."
 
             "no such file or directory" in lower ->
                 "A file needed for this step is missing. Choose the video again and retry."
@@ -32,7 +59,7 @@ object Ffmpeg {
             "unknown encoder" in lower || "encoder not found" in lower ->
                 "This device does not have the requested encoder."
 
-            else -> "FFmpeg failed ($code)."
+            else -> if (code.isBlank()) "FFmpeg failed." else "FFmpeg failed ($code)."
         }
         return "$reason ${tail(log)}"
     }
