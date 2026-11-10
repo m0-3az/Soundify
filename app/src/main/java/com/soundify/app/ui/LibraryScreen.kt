@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -71,13 +70,6 @@ fun LibraryScreen(
                     }
                 }
             )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onNew,
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("New project") }
-            )
         }
     ) { padding ->
         if (projects.isEmpty()) {
@@ -88,6 +80,7 @@ fun LibraryScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                NewProjectCard(onClick = onNew)
                 CleanVideoCard(onClick = onCleanVideo)
                 AudioEditorCard(onClick = onAudioEditor)
                 Box(
@@ -112,9 +105,10 @@ fun LibraryScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                item { NewProjectCard(onClick = onNew) }
                 item { CleanVideoCard(onClick = onCleanVideo) }
                 item { AudioEditorCard(onClick = onAudioEditor) }
                 items(projects, key = { it.id }) { project ->
@@ -183,6 +177,37 @@ fun LibraryScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun NewProjectCard(onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("New project", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Import 2–8 stems and mix them",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
