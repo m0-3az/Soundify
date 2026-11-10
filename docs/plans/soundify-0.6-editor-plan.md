@@ -140,17 +140,17 @@ Methods:
 - `create(name): EditorProject` — mkdir, save, return.
 - `delete(id): Boolean` — direct-child canonical check; delete recursively;
   return false for traversal, blank id, or the root itself.
-- `sourceFile(hash, extension): File`, `peaksFile(hash): File`,
+- `sourceFile(projectId, hash, extension): File`, `peaksFile(projectId, hash): File`,
   `projectDir(id): File`.
-- `registerSource(temp: File, hash: String, extension: String): File` —
-  if `sources/<hash>.<ext>` exists, delete `temp` and return the existing
-  file; else rename `temp` into place.
+- `registerSource(projectId, temp, hash, extension): RegisteredSource` —
+  if `<projectId>/sources/<hash>.<ext>` exists, delete `temp` and return the
+  existing file; else rename `temp` into place.
 - `bytesOf(id): Long`.
 
 ### Importer
 
 `EditorImporter(context, store)`:
-- `suspend fun import(uri: Uri, displayName: String?): ImportedSource`
+- `suspend fun import(projectId: String, uri: Uri, displayName: String?): ImportedSource`
 - Copy the URI to `cacheDir/editor/import.tmp` while feeding SHA-256.
 - Extension from the display name, sanitized to `[a-z0-9]{1,5}`, default `wav`.
 - Dedup through `store.registerSource`.
@@ -176,9 +176,12 @@ JVM:
 - future `schemaVersion` is reported.
 
 Instrumented:
-- import a generated 2 s WAV through `Uri.fromFile`; assert file exists under
-  `sources/`, duration ≈ 2000 ms, sample rate 44100, channels 2.
-- import the same file twice; assert one source file and the same hash.
+- import a generated 2 s WAV through `Uri.fromFile` into a created project;
+  assert the file exists under `<projectId>/sources/`, duration ≈ 2000 ms,
+  sample rate 44100, channels 2.
+- import the same file twice into one project; assert one source file and the
+  same hash.
+- import the same file into a second project; assert a separate copy.
 
 ### Acceptance
 
@@ -209,8 +212,8 @@ New:
 - `Waveform.writeCache(file, peaks, durationMs)` atomic via `.tmp` + rename.
 - `Waveform.readCache(file): PeakData?` rejects wrong magic, wrong version,
   impossible bucket counts and truncated files.
-- `Waveform.decode(context, source: File, hash: String, durationMs: Long):
-  PeakData?`:
+- `Waveform.decode(context, source: File, projectId: String, hash: String,
+  durationMs: Long): PeakData?`:
   - FFmpeg: `-y -i <src> -ac 1 -ar 8000 -c:a pcm_s16le -f wav <tmp>`
   - read PCM in a streaming loop, bucket, delete tmp, write
     `peaks/<hash>.bin`.
@@ -234,7 +237,8 @@ call and confirm the peaks still load).
 - 5-minute file peaks build in under 5 s on the emulator; cache load is
   instant.
 - No full-resolution PCM is held in memory.
-- Cache is keyed by source hash, so split clips share one file.
+- Cache is keyed by `(projectId, hash)`, so split clips in one project share
+  one file.
 
 ## Task 3: EditorFormat and FilterGraph
 
