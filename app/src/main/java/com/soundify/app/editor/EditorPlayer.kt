@@ -73,6 +73,7 @@ class EditorPlayer {
     private var gainDb = 0f
     private var speed = 1f
     private var pitchSemitones = 0
+    private var pendingSeekMs: Long? = null
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -144,7 +145,12 @@ class EditorPlayer {
         if (target < clip.trimEndMs) sequenceFinished = false
         val player = player
         if (player != null && prepared) {
+            pendingSeekMs = null
             runCatching { player.seekTo(target.toInt()) }
+        } else {
+            // prepareAsync may not have returned yet; remember the seek so
+            // handlePrepared lands on it instead of the trim start.
+            pendingSeekMs = target
         }
         _positionMs.value = target
     }
@@ -197,6 +203,7 @@ class EditorPlayer {
         val item = queue.current
         releasePlayer()
         prepared = false
+        pendingSeekMs = null
         sequenceFinished = false
         _currentIndex.value = queue.index
         _positionMs.value = item.clip.trimStartMs
@@ -229,8 +236,10 @@ class EditorPlayer {
         val gain = previewGain(gainDb)
         runCatching { player.setVolume(gain, gain) }
         applyPlaybackParams(player)
-        runCatching { player.seekTo(clip.trimStartMs.toInt()) }
-        _positionMs.value = clip.trimStartMs
+        val target = pendingSeekMs ?: clip.trimStartMs
+        pendingSeekMs = null
+        runCatching { player.seekTo(target.toInt()) }
+        _positionMs.value = target
         startPlayback(player)
     }
 
@@ -326,6 +335,7 @@ class EditorPlayer {
         playing = false
         prepared = false
         sequenceFinished = false
+        pendingSeekMs = null
         _isPlaying.value = false
         releasePlayer()
     }

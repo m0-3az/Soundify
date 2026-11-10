@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +24,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private val store = EditorStore(File(application.filesDir, STORE_DIR))
     private val importer = EditorImporter(application, store)
+    private val exporter by lazy { EditorExporter(application, store) }
     private val history = EditorHistory<EditorProject>()
 
     private val _projects = MutableStateFlow<List<EditorSummary>>(emptyList())
@@ -92,14 +94,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 val project = store.create(projectNameFor(displayName))
                 createdId = project.id
                 val imported = importer.import(project.id, uri, displayName)
-                val clip = EditorClip(
-                    sourceHash = imported.hash,
-                    sourceFile = "sources/${imported.file.name}",
-                    displayName = imported.displayName,
-                    sourceDurationMs = imported.durationMs,
-                    sourceSampleRate = imported.sampleRate,
-                    sourceChannels = imported.channels,
-                )
+                val clip = clipFrom(imported)
                 val saved = project.copy(clips = listOf(clip))
                 store.save(saved)
                 val reloaded = store.load(saved.id) ?: saved
@@ -135,9 +130,81 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /** App-private copy of [clip]'s source inside [projectId]'s directory. */
+    fun sourceFile(projectId: String, clip: EditorClip): File =
+        File(store.projectDir(projectId), clip.sourceFile)
+
+    /** Builds or reads the cached waveform envelope for [clip]. */
+    suspend fun peaksFor(projectId: String, clip: EditorClip): PeakData? =
+        withContext(Dispatchers.IO) {
+            val source = sourceFile(projectId, clip)
+            if (!source.isFile) return@withContext null
+            Waveform.decode(
+                getApplication(),
+                source,
+                store.peaksFile(projectId, clip.sourceHash),
+                clip.sourceDurationMs,
+            )
+        }
+
+    /**
+     * Copies a picked audio file into the active project and appends it as a
+     * new clip. [onAdded] runs on the main dispatcher with the new clip id.
+     */
+    fun addAudio(uri: Uri, displayName: String?, onAdded: (String) -> Unit = {}) {
+        val project = _active.value ?: return
+        if (_isBusy.value) return
+        _isBusy.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val imported = importer.import(project.id, uri, displayName)
+                val clip = clipFrom(imported)
+                withContext(Dispatchers.Main) {
+                    if (_active.value?.id != project.id) {
+                        _message.value = "This edit is no longer open"
+                    } else {
+                        edit(coalesceKey = null) { current ->
+                            current.copy(clips = current.clips + clip)
+                        }
+                        if (_active.value?.clips?.any { it.id == clip.id } == true) {
+                            onAdded(clip.id)
+                        }
+                    }
+                }
+            } catch (error: Throwable) {
+                _projects.value = store.list()
+                withContext(Dispatchers.Main) {
+                    _message.value = error.message ?: "Could not import this audio file"
+                }
+            } finally {
+                withContext(Dispatchers.Main) { _isBusy.value = false }
+            }
+        }
+    }
+
+    /** Saves the active project, then renders it to [target] with FFmpeg. */
+    suspend fun export(
+        format: EditorFormat,
+        target: Uri,
+        onProgress: (Int) -> Unit = {},
+        onCancelReady: (() -> Unit) -> Unit = {},
+    ): Result<Unit> {
+        saveNow()
+        val project = _active.value
+            ?: return Result.failure(IllegalStateException("No edit is open"))
+        return exporter.export(
+            project = project,
+            clips = project.clips,
+            format = format,
+            target = target,
+            onProgress = onProgress,
+            onCancelReady = onCancelReady,
+        )
+    }
+
     fun delete(projectId: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            saveJob?.cancel()
+            saveJob?.cancelAndJoin()
             val deleted = store.delete(projectId)
             _projects.value = store.list()
             withContext(Dispatchers.Main) {
@@ -150,6 +217,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+    }
+
+    /**
+     * Clears the active project synchronously, then deletes it. The clear must
+     * happen before navigation so the screen's disposal flush cannot save the
+     * project back to disk after the delete.
+     */
+    fun deleteActive(projectId: String) {
+        if (_active.value?.id == projectId) {
+            _active.value = null
+            history.reset()
+            refreshHistoryFlags()
+        }
+        delete(projectId)
     }
 
     /**
@@ -234,7 +315,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Saves a snapshot that was waiting for its debounce, before switching projects. */
     private suspend fun savePending() {
-        saveJob?.cancel()
+        saveJob?.cancelAndJoin()
         val project = _active.value ?: return
         store.save(project)
     }
@@ -250,6 +331,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: UNTITLED
+
+    private fun clipFrom(imported: ImportedSource): EditorClip = EditorClip(
+        sourceHash = imported.hash,
+        sourceFile = "sources/${imported.file.name}",
+        displayName = imported.displayName,
+        sourceDurationMs = imported.durationMs,
+        sourceSampleRate = imported.sampleRate,
+        sourceChannels = imported.channels,
+    )
 
     private companion object {
         const val STORE_DIR = "editor"

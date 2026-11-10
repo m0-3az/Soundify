@@ -178,15 +178,23 @@ fun SoundifyApp(
             )
 
             is Screen.Editor -> {
-                // The editor screen itself arrives in the next task; this route
-                // exists so navigation and back behaviour can be verified now.
                 DisposableEffect(editorViewModel) {
                     onDispose { editorViewModel.flush() }
                 }
-                EditorScreenShell(
-                    projectName = editorActive?.name,
-                    onBack = viewModel::back,
-                )
+                val project = editorActive
+                if (project == null) {
+                    EditorScreenShell(projectName = null, onBack = viewModel::back)
+                } else {
+                    EditorScreen(
+                        project = project,
+                        viewModel = editorViewModel,
+                        onBack = viewModel::back,
+                        onDeleted = {
+                            editorViewModel.deleteActive(project.id)
+                            viewModel.back()
+                        },
+                    )
+                }
             }
         }
 

@@ -162,6 +162,23 @@ class EditorPlayerTest {
     }
 
     @Test
+    fun seekBeforePrepareIsAppliedWhenPlaybackStarts() {
+        val player = newPlayer()
+        onMain {
+            player.load(clip(trimStartMs = 0L, trimEndMs = 2_000L), source)
+            // prepareAsync has not returned yet, so this seek must be remembered.
+            player.seekToSourceMs(1_000L)
+        }
+
+        await("preview never started") { player.isPlaying.value }
+        val startedAt = player.positionMs.value
+        assertTrue(
+            "a seek before prepare was lost; playback started at $startedAt",
+            startedAt >= 900L,
+        )
+    }
+
+    @Test
     fun releaseStopsPlaybackAndIsSafeTwice() {
         val player = newPlayer()
         val finished = CountDownLatch(1)

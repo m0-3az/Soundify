@@ -75,6 +75,44 @@ data class EditorProject(
     }
 }
 
+/**
+ * Splits [clipId] at [atSourceMs] into two clips that share the source and keep
+ * the outer fades. The split point is a hard join: the second half's crossfade
+ * is 0. The project is returned unchanged when the clip is missing or shorter
+ * than two [MIN_CLIP_MS] halves.
+ */
+fun EditorProject.splitClip(clipId: String, atSourceMs: Long): EditorProject {
+    val index = clips.indexOfFirst { it.id == clipId }
+    if (index < 0) return this
+    val clip = clips[index]
+    val minSplit = clip.trimStartMs + MIN_CLIP_MS
+    val maxSplit = clip.trimEndMs - MIN_CLIP_MS
+    if (maxSplit < minSplit) return this
+    val split = atSourceMs.coerceIn(minSplit, maxSplit)
+    val speedFactor = if (clip.speed.isFinite() && clip.speed > 0f) clip.speed else 1f
+    val firstRendered = ((split - clip.trimStartMs) / speedFactor).roundToLong().coerceAtLeast(1L)
+    val secondRendered = ((clip.trimEndMs - split) / speedFactor).roundToLong().coerceAtLeast(1L)
+    val first = clip.copy(
+        id = UUID.randomUUID().toString(),
+        trimEndMs = split,
+        fadeInMs = clip.fadeInMs.coerceIn(0L, firstRendered),
+        fadeOutMs = 0L,
+        crossfadeMs = if (index == 0) 0L else clip.crossfadeMs,
+    )
+    val second = clip.copy(
+        id = UUID.randomUUID().toString(),
+        trimStartMs = split,
+        fadeInMs = 0L,
+        fadeOutMs = clip.fadeOutMs.coerceIn(0L, secondRendered),
+        crossfadeMs = 0L,
+    )
+    val updated = clips.toMutableList()
+    updated.removeAt(index)
+    updated.add(index, first)
+    updated.add(index + 1, second)
+    return copy(clips = updated)
+}
+
 val EditorProject.isFutureSchema: Boolean
     get() = schemaVersion > EditorProject.CURRENT_SCHEMA
 
@@ -86,9 +124,35 @@ val EditorClip.renderedDurationMs: Long
     get() {
         val trimmed = (trimEndMs - trimStartMs).coerceAtLeast(0L)
         if (trimmed == 0L) return 1L
-        val effectiveSpeed = if (speed.isFinite() && speed > 0f) speed else 1f
-        return (trimmed / effectiveSpeed).roundToLong().coerceAtLeast(1L)
+        return (trimmed / speedFactor).roundToLong().coerceAtLeast(1L)
     }
+
+/** Project-relative time for [sourceMs] inside the clip at [clipIndex]. */
+fun EditorProject.positionAt(clipIndex: Int, sourceMs: Long): Long {
+    if (clips.isEmpty()) return 0L
+    val index = clipIndex.coerceIn(0, clips.lastIndex)
+    val clip = clips[index]
+    val before = clips.subList(0, index).sumOf { it.renderedDurationMs }
+    val offset = ((sourceMs - clip.trimStartMs).coerceAtLeast(0L) / clip.speedFactor)
+        .roundToLong()
+    return (before + offset).coerceIn(0L, durationMs)
+}
+
+/** Clip index and source position for a project-relative [positionMs]. */
+fun EditorProject.locate(positionMs: Long): Pair<Int, Long> {
+    if (clips.isEmpty()) return 0 to 0L
+    var remaining = positionMs.coerceAtLeast(0L)
+    clips.forEachIndexed { index, clip ->
+        val rendered = clip.renderedDurationMs
+        if (remaining < rendered || index == clips.lastIndex) {
+            val offset = (remaining.coerceAtMost(rendered) * clip.speedFactor).roundToLong()
+            val source = (clip.trimStartMs + offset).coerceIn(clip.trimStartMs, clip.trimEndMs)
+            return index to source
+        }
+        remaining -= rendered
+    }
+    return clips.lastIndex to clips.last().trimEndMs
+}
 
 private const val MIN_CLIP_MS = 250L
 
@@ -120,3 +184,6 @@ private fun EditorClip.sanitized(): EditorClip {
 }
 
 private fun Float.finiteOr(fallback: Float): Float = if (isFinite()) this else fallback
+
+private val EditorClip.speedFactor: Float
+    get() = if (speed.isFinite() && speed > 0f) speed else 1f

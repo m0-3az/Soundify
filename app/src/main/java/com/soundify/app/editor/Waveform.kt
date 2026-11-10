@@ -2,6 +2,7 @@ package com.soundify.app.editor
 
 import android.content.Context
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -20,6 +21,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.min
 
 /** A min/max waveform envelope and the source duration it describes. */
@@ -188,6 +190,9 @@ object Waveform {
         bucket * frames / buckets
 }
 
+private const val HANDLE_TOUCH_SLOP = 0.04f
+private const val MIN_SELECTION_GAP = 0.005f
+
 /**
  * Draws the min/max envelope with the playhead, the active selection and its
  * trim handles. Fractions are `0..1`; playback and trimming state stay with
@@ -200,17 +205,60 @@ fun WaveformView(
     selection: ClosedFloatingPointRange<Float>?,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    onTrimChange: ((ClosedFloatingPointRange<Float>) -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val seek by rememberUpdatedState(onSeek)
+    val currentSelection by rememberUpdatedState(selection)
+    val trimChange by rememberUpdatedState(onTrimChange)
     Canvas(
-        modifier = modifier.pointerInput(Unit) {
-            detectTapGestures { offset ->
-                if (size.width > 0) {
-                    seek((offset.x / size.width).coerceIn(0f, 1f))
-                }
+        modifier = modifier
+            .pointerInput(Unit) {
+                if (trimChange == null) return@pointerInput
+                var handle: Int? = null
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        val range = currentSelection
+                        handle = if (range == null || size.width <= 0) {
+                            null
+                        } else {
+                            val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                            val toStart = abs(fraction - range.start)
+                            val toEnd = abs(fraction - range.endInclusive)
+                            when {
+                                minOf(toStart, toEnd) > HANDLE_TOUCH_SLOP -> null
+                                toStart <= toEnd -> 0
+                                else -> 1
+                            }
+                        }
+                    },
+                    onDragEnd = { handle = null },
+                    onDragCancel = { handle = null },
+                    onDrag = { change, _ ->
+                        val active = handle
+                        val range = currentSelection
+                        if (active != null && range != null && size.width > 0) {
+                            change.consume()
+                            val fraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                            val updated = if (active == 0) {
+                                fraction.coerceAtMost(range.endInclusive - MIN_SELECTION_GAP)..
+                                    range.endInclusive
+                            } else {
+                                range.start..
+                                    fraction.coerceAtLeast(range.start + MIN_SELECTION_GAP)
+                            }
+                            trimChange?.invoke(updated)
+                        }
+                    },
+                )
             }
-        },
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    if (size.width > 0) {
+                        seek((offset.x / size.width).coerceIn(0f, 1f))
+                    }
+                }
+            },
     ) {
         val width = size.width
         val height = size.height
