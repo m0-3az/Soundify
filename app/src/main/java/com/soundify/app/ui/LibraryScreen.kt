@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MusicOff
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -53,7 +54,8 @@ fun LibraryScreen(
     onRename: (Project, String) -> Unit,
     onDelete: (Project) -> Unit,
     onSettings: () -> Unit,
-    onCleanVideo: () -> Unit
+    onCleanVideo: () -> Unit,
+    onAudioEditor: () -> Unit
 ) {
     var pendingDelete by remember { mutableStateOf<Project?>(null) }
     var pendingRename by remember { mutableStateOf<Project?>(null) }
@@ -87,6 +89,7 @@ fun LibraryScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 CleanVideoCard(onClick = onCleanVideo)
+                AudioEditorCard(onClick = onAudioEditor)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -113,6 +116,7 @@ fun LibraryScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 item { CleanVideoCard(onClick = onCleanVideo) }
+                item { AudioEditorCard(onClick = onAudioEditor) }
                 items(projects, key = { it.id }) { project ->
                     ProjectCard(
                         project = project,
@@ -205,6 +209,37 @@ private fun CleanVideoCard(onClick: () -> Unit) {
                 Text("Clean Media", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Remove music from audio or video",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioEditorCard(onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.GraphicEq,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Audio editor", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Trim, merge, convert and record audio",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -32,6 +32,8 @@ sealed interface Screen {
     data class Player(val projectId: String) : Screen
     data object Settings : Screen
     data object CleanVideo : Screen
+    data object EditorHome : Screen
+    data class Editor(val projectId: String) : Screen
 }
 
 class SoundifyViewModel(application: Application) : AndroidViewModel(application) {
@@ -111,6 +113,14 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
 
     fun openCleanVideo() {
         screen.value = Screen.CleanVideo
+    }
+
+    fun openEditorHome() {
+        screen.value = Screen.EditorHome
+    }
+
+    fun openEditor(projectId: String) {
+        screen.value = Screen.Editor(projectId)
     }
 
     fun renameProject(project: Project, name: String) {
@@ -382,6 +392,8 @@ class SoundifyViewModel(application: Application) : AndroidViewModel(application
             is Screen.Settings -> screen.value = Screen.Library
             is Screen.Player -> closePlayer()
             is Screen.CleanVideo -> screen.value = Screen.Library
+            is Screen.Editor -> screen.value = Screen.EditorHome
+            is Screen.EditorHome -> screen.value = Screen.Library
         }
     }
 

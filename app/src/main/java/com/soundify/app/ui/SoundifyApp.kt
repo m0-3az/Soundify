@@ -5,9 +5,19 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -15,14 +25,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.soundify.app.Screen
 import com.soundify.app.SoundifyViewModel
 import com.soundify.app.data.ThemePreferences
+import com.soundify.app.editor.EditorViewModel
 import java.io.File
 
 @Composable
-fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences) {
+fun SoundifyApp(
+    viewModel: SoundifyViewModel,
+    themePreferences: ThemePreferences,
+    editorViewModel: EditorViewModel = viewModel(),
+) {
     val screen by viewModel.screen.collectAsStateWithLifecycle()
     val projects by viewModel.projects.collectAsStateWithLifecycle()
     val current by viewModel.current.collectAsStateWithLifecycle()
@@ -36,6 +54,10 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
     val storage by viewModel.storageUsed.collectAsStateWithLifecycle()
     val storageUsage by viewModel.storage.collectAsStateWithLifecycle()
     val storageMessage by viewModel.storageMessage.collectAsStateWithLifecycle()
+    val editorProjects by editorViewModel.projects.collectAsStateWithLifecycle()
+    val editorActive by editorViewModel.active.collectAsStateWithLifecycle()
+    val editorBusy by editorViewModel.isBusy.collectAsStateWithLifecycle()
+    val editorMessage by editorViewModel.message.collectAsStateWithLifecycle()
 
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
@@ -54,6 +76,19 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
         }
     }
 
+    LaunchedEffect(editorMessage) {
+        editorMessage?.let {
+            snackbar.showSnackbar(it)
+            editorViewModel.clearMessage()
+        }
+    }
+
+    // A 500 ms debounce is invisible while editing, but backgrounding the app
+    // inside that window must not lose the last change.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        editorViewModel.flush()
+    }
+
     BackHandler(enabled = screen !is Screen.Library) {
         viewModel.back()
     }
@@ -67,7 +102,8 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
                 onRename = viewModel::renameProject,
                 onDelete = viewModel::deleteProject,
                 onSettings = viewModel::openSettings,
-                onCleanVideo = viewModel::openCleanVideo
+                onCleanVideo = viewModel::openCleanVideo,
+                onAudioEditor = viewModel::openEditorHome
             )
 
             is Screen.Import -> ImportScreen(
@@ -106,7 +142,8 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
                         onRename = viewModel::renameProject,
                         onDelete = viewModel::deleteProject,
                         onSettings = viewModel::openSettings,
-                        onCleanVideo = viewModel::openCleanVideo
+                        onCleanVideo = viewModel::openCleanVideo,
+                        onAudioEditor = viewModel::openEditorHome
                     )
                 }
             }
@@ -122,12 +159,67 @@ fun SoundifyApp(viewModel: SoundifyViewModel, themePreferences: ThemePreferences
             is Screen.CleanVideo -> CleanVideoScreen(
                 onBack = viewModel::back
             )
+
+            is Screen.EditorHome -> EditorHomeScreen(
+                projects = editorProjects,
+                isBusy = editorBusy,
+                onOpen = { projectId ->
+                    editorViewModel.open(projectId) { viewModel.openEditor(projectId) }
+                },
+                onCreate = { uri, displayName ->
+                    editorViewModel.createFromAudio(uri, displayName) { projectId ->
+                        if (viewModel.screen.value is Screen.EditorHome) {
+                            viewModel.openEditor(projectId)
+                        }
+                    }
+                },
+                onDelete = editorViewModel::delete,
+                onBack = viewModel::back,
+            )
+
+            is Screen.Editor -> {
+                // The editor screen itself arrives in the next task; this route
+                // exists so navigation and back behaviour can be verified now.
+                DisposableEffect(editorViewModel) {
+                    onDispose { editorViewModel.flush() }
+                }
+                EditorScreenShell(
+                    projectName = editorActive?.name,
+                    onBack = viewModel::back,
+                )
+            }
         }
 
         SnackbarHost(
             hostState = snackbar,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditorScreenShell(projectName: String?, onBack: () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(projectName ?: "Editor") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("Opening edit…")
+        }
     }
 }
 
